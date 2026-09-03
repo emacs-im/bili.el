@@ -48,7 +48,13 @@
          (source (bili-playback-live-source data)))
     (should (equal (bili-playback-source-url source)
                    "https://flv.example/live.flv?signed=2"))
-    (should (equal (bili-playback-source-mime-type source) "video/x-flv"))))
+    (should (equal (bili-playback-source-mime-type source) "video/x-flv"))
+    (let* ((unsupported (copy-tree data))
+           (playurl
+            (alist-get 'playurl (alist-get 'playurl_info unsupported)))
+           (streams (alist-get 'stream playurl)))
+      (setf (alist-get 'stream playurl) (list (car streams)))
+      (should-error (bili-playback-live-source unsupported)))))
 
 (ert-deftest bili-playback-live-cdn-receives-no-account-cookie ()
   (let ((room

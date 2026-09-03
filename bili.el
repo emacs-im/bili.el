@@ -19,8 +19,10 @@
 (require 'bili-auth)
 (require 'bili-browse)
 (require 'bili-core)
-(require 'bili-evil)
 (require 'bili-playback)
+
+(with-eval-after-load 'evil
+  (require 'bili-evil))
 
 ;;;###autoload
 (defun bili ()

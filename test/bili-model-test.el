@@ -110,12 +110,15 @@
                    "Entertainment / Games Retro"))
     (should (= (bili-catalog-item-live-status item) 2))
     (should (= (bili-catalog-item-metric item) 101)))
-  (let ((room (bili-model-live-room-from-json '((roomid . 9)))))
+  (let* ((data '((roomid . 9)))
+         (room (bili-model-live-room-from-json data))
+         (item (bili-model-live-catalog-item data)))
     (should (equal (bili-live-room-description room) ""))
     (should (equal (bili-live-room-area room) ""))
     (should (equal (bili-live-room-parent-area room) ""))
     (should (= (bili-live-room-online room) 0))
-    (should (= (bili-live-room-live-status room) -1))))
+    (should (= (bili-live-room-live-status room) -1))
+    (should (= (bili-catalog-item-live-status item) -1))))
 
 (provide 'bili-model-test)
 

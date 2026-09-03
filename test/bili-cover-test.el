@@ -83,7 +83,9 @@
   (should-not
    (bili-cover-normalize-url "https://hdslb.com.evil.test/a.jpg"))
   (should-not
-   (bili-cover-normalize-url "https://user@i0.hdslb.com/a.jpg")))
+   (bili-cover-normalize-url "https://user@i0.hdslb.com/a.jpg"))
+  (should-not
+   (bili-cover-normalize-url "https://i0.hdslb.com:444/a.jpg")))
 (ert-deftest bili-cover-catalog-produces-four-fixed-width-slices ()
   (let* ((app (bili-core-app))
          (view

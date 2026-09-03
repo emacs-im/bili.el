@@ -53,6 +53,9 @@
 (defvar bili-auth--capture-handle nil
   "Appkit handle owning the current browser-session request.")
 
+(defvar bili-auth--capture-file nil
+  "Private temporary file for the current browser-session request.")
+
 (defun bili-auth--valid-value-p (value)
   "Return non-nil when cookie VALUE is safe for an HTTP Cookie header."
   (and (stringp value)
@@ -204,12 +207,25 @@
   (when (and (stringp file) (file-exists-p file))
     (ignore-errors (delete-file file))))
 
+(defun bili-auth--cancel-owned-capture (capture)
+  "Cancel owned browser CAPTURE and remove its temporary file."
+  (let ((request (car-safe capture))
+        (file (cdr-safe capture)))
+    (when request
+      (browser-session-cancel request))
+    (bili-auth--delete-capture file)
+    (when (eq request bili-auth--capture-request)
+      (setq bili-auth--capture-request nil
+            bili-auth--capture-handle nil
+            bili-auth--capture-file nil))))
+
 (defun bili-auth--retire-capture ()
   "Retire the current browser-session request and its Appkit handle."
   (when (appkit-handle-p bili-auth--capture-handle)
     (appkit-retire-handle bili-auth--capture-handle))
   (setq bili-auth--capture-handle nil
-        bili-auth--capture-request nil))
+        bili-auth--capture-request nil
+        bili-auth--capture-file nil))
 
 (defun bili-auth--capture-finished (file)
   "Import browser-session capture FILE."
@@ -264,10 +280,11 @@
                   (bili-auth--capture-failed file restart-running failure)))))
           (unless settled
             (setq bili-auth--capture-request request
+                  bili-auth--capture-file file
                   bili-auth--capture-handle
                   (appkit-register-handle
-                   (bili-core-app) 'function request
-                   #'browser-session-cancel)))
+                   (bili-core-app) 'function (cons request file)
+                   #'bili-auth--cancel-owned-capture)))
           request)
       (error
        (bili-auth--delete-capture file)
@@ -282,8 +299,13 @@
 (defun bili-auth-clear ()
   "Delete imported Bilibili credentials without changing the browser."
   (interactive)
-  (when (browser-session-request-live-p bili-auth--capture-request)
-    (browser-session-cancel bili-auth--capture-request))
+  (cond
+   ((and (appkit-handle-p bili-auth--capture-handle)
+         (appkit-handle-alive-p bili-auth--capture-handle))
+    (appkit-cancel-handle bili-auth--capture-handle))
+   (bili-auth--capture-request
+    (bili-auth--cancel-owned-capture
+     (cons bili-auth--capture-request bili-auth--capture-file))))
   (bili-auth--retire-capture)
   (let ((file (expand-file-name bili-auth-file)))
     (when (file-exists-p file)

@@ -368,9 +368,9 @@ already visible, PHASE the request phase, and PAGE the accepted page number."
 
 (defun bili-browse--catalog-succeeded
     (view state token phase page data &optional quiet)
-  "Install catalog DATA for PAGE and PHASE when TOKEN owns VIEW.
+  "Install catalog DATA for PAGE and PHASE when TOKEN owns VIEW and STATE.
 
-QUIET suppresses completion messages for automatic pagination."
+QUIET suppresses echo-area reporting if response adaptation fails."
   (when (bili-browse--catalog-request-current-p view state token)
     (condition-case error-data
         (let* ((models (bili-browse--catalog-item-list state data))
@@ -400,12 +400,7 @@ QUIET suppresses completion messages for automatic pagination."
                 (bili-browse--catalog-exhausted-p
                  state data models new phase page))
           (appkit-request-sync
-           view :structure t :part 'catalog :position t)
-          (unless quiet
-            (message (if (eq phase 'older)
-                         "Loaded %d more Bilibili items"
-                       "Loaded %d Bilibili items")
-                     (length new))))
+           view :structure t :part 'catalog :position t))
       (error
        (bili-browse--catalog-failed
         view state token phase (error-message-string error-data) quiet)))))

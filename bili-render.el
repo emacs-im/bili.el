@@ -5,7 +5,7 @@
 
 ;;; Commentary:
 
-;; Render normalized Bilibili models carried by Appkit directory entries.
+;; Render normalized Bilibili models as responsive Appkit projection rows.
 
 ;;; Code:
 
@@ -109,7 +109,7 @@
     (concat left (make-string padding ?\s) right)))
 
 (defun bili-render--video-card-lines (item width)
-  "Return responsive content lines for video catalog ITEM."
+  "Return content lines for video catalog ITEM constrained to WIDTH."
   (list
    (bili-render--catalog-content-line
     (propertize (bili-catalog-item-title item) 'face 'bili-title-face)
@@ -140,7 +140,7 @@
     width)))
 
 (defun bili-render--live-card-lines (item width)
-  "Return responsive content lines for live catalog ITEM."
+  "Return content lines for live catalog ITEM constrained to WIDTH."
   (let ((status
          (bili-render--live-status (bili-catalog-item-live-status item))))
     (list

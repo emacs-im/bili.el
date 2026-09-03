@@ -61,6 +61,7 @@
 (ert-deftest bili-auth-capture-is-minimal-and-appkit-owned ()
   (let ((bili-auth--capture-request nil)
         (bili-auth--capture-handle nil)
+        (bili-auth--capture-file nil)
         arguments
         canceled
         capture-file)
@@ -81,10 +82,15 @@
                          '("SESSDATA" "bili_jct")))
           (should-not (plist-member arguments :all-origin-cookies))
           (should (appkit-handle-alive-p bili-auth--capture-handle))
-          (appkit-cancel-handle bili-auth--capture-handle)
-          (should (eq canceled 'browser-request)))
+          (bili-core-stop)
+          (should (eq canceled 'browser-request))
+          (should-not (file-exists-p capture-file))
+          (should-not bili-auth--capture-request)
+          (should-not bili-auth--capture-handle)
+          (should-not bili-auth--capture-file))
       (setq bili-auth--capture-request nil
-            bili-auth--capture-handle nil)
+            bili-auth--capture-handle nil
+            bili-auth--capture-file nil)
       (when (and capture-file (file-exists-p capture-file))
         (delete-file capture-file))
       (bili-core-stop))))

@@ -48,6 +48,8 @@
             (should (string-match-p "First paragraph\nSecond paragraph"
                                     (buffer-string)))
             (should (string-match-p "P2  Part two" (buffer-string)))
+            (should-not
+             (string-match-p "g refresh.*P play" (buffer-string)))
             (bili-detail--play-page-action
              (cadr (bili-video-pages
                     (bili-core-video (appkit-view-app view)

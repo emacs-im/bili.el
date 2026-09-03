@@ -238,7 +238,9 @@
 
 (defun bili-api--finish-step
     (request step-callback status &optional accepted-codes)
-  "Finish one REQUEST step and pass its accepted data to STEP-CALLBACK."
+  "Finish one REQUEST step with STATUS and pass data to STEP-CALLBACK.
+
+ACCEPTED-CODES permits explicitly useful nonzero provider response codes."
   (let ((buffer (current-buffer))
         result failure)
     (when (and (not (bili-api-request-settled-p request))
@@ -296,7 +298,7 @@ ACCEPTED-CODES permits explicitly useful nonzero provider response codes."
     buffer))
 
 (defun bili-api--start (callback errback owner starter)
-  "Create a managed request and invoke STARTER with it."
+  "Create a request for CALLBACK and ERRBACK under OWNER, then call STARTER."
   (unless (functionp callback)
     (error "Bilibili request callback is not callable"))
   (let* ((error-fn (or errback (lambda (message) (message "%s" message))))
@@ -358,7 +360,9 @@ Appkit application and owns cancellation."
 
 (defun bili-api--dispatch-wbi-endpoint
     (request root endpoint parameters mixin-key)
-  "Dispatch signed WBI ENDPOINT as part of REQUEST."
+  "Dispatch signed WBI ROOT and ENDPOINT with PARAMETERS for REQUEST.
+
+MIXIN-KEY signs the request."
   (let ((signed (bili-api-wbi-sign
                  parameters mixin-key (floor (float-time)))))
     (bili-api--dispatch-step
@@ -396,13 +400,17 @@ ERRBACK and OWNER have the same meanings as in `bili-api-get'."
           '(-101)))))))
 
 (cl-defun bili-api-video (bvid callback &key errback owner)
-  "Read BVID detail and call CALLBACK with its data object."
+  "Read BVID detail and pass its data object to CALLBACK.
+
+ERRBACK receives failures; OWNER controls request cancellation."
   (bili-api-get
    bili-api--web-root "/x/web-interface/view" `((bvid . ,bvid)) callback
    :errback errback :owner owner))
 
 (cl-defun bili-api-video-playurl (bvid cid callback &key errback owner)
-  "Read progressive playback data for BVID and CID."
+  "Read BVID and CID progressive playback data, then call CALLBACK.
+
+ERRBACK receives failures; OWNER controls request cancellation."
   (bili-api-wbi-get
    bili-api--web-root "/x/player/wbi/playurl"
    `((bvid . ,bvid) (cid . ,cid) (qn . 64) (fnver . 0) (fnval . 0)
@@ -421,7 +429,9 @@ ERRBACK and OWNER have the same meanings as in `bili-api-get'."
 
 (cl-defun bili-api-search-videos
     (query page callback &key (page-size 20) errback owner)
-  "Search PAGE-SIZE videos for QUERY at PAGE."
+  "Search PAGE-SIZE videos for QUERY at PAGE, then call CALLBACK.
+
+ERRBACK receives failures; OWNER controls request cancellation."
   (unless (and (integerp page-size) (<= 1 page-size 50))
     (error "Bilibili search page size must be between 1 and 50"))
   (bili-api-wbi-get
@@ -431,20 +441,26 @@ ERRBACK and OWNER have the same meanings as in `bili-api-get'."
    callback :errback errback :owner owner))
 
 (cl-defun bili-api-live-room-init (room-id callback &key errback owner)
-  "Resolve ROOM-ID and call CALLBACK with canonical room data."
+  "Resolve ROOM-ID and pass canonical room data to CALLBACK.
+
+ERRBACK receives failures; OWNER controls request cancellation."
   (bili-api-get
    bili-api--live-root "/room/v1/Room/room_init"
    `((id . ,room-id)) callback :errback errback :owner owner))
 
 (cl-defun bili-api-live-room (room-id callback &key errback owner)
-  "Read ROOM-ID metadata and call CALLBACK with its data object."
+  "Read ROOM-ID metadata and pass its data object to CALLBACK.
+
+ERRBACK receives failures; OWNER controls request cancellation."
   (bili-api-get
    bili-api--live-root "/xlive/web-room/v1/index/getRoomBaseInfo"
    `((req_biz . "web_room_componet") (room_ids . ,room-id))
    callback :errback errback :owner owner))
 
 (cl-defun bili-api-live-play-info (room-id callback &key errback owner)
-  "Read live playback candidates for canonical ROOM-ID."
+  "Read ROOM-ID live playback candidates and call CALLBACK.
+
+ERRBACK receives failures; OWNER controls request cancellation."
   (bili-api-get
    bili-api--live-root "/xlive/web-room/v2/index/getRoomPlayInfo"
    `((room_id . ,room-id) (protocol . "0,1") (format . "0,1,2")
@@ -452,7 +468,9 @@ ERRBACK and OWNER have the same meanings as in `bili-api-get'."
    callback :errback errback :owner owner))
 
 (cl-defun bili-api-live-list (page callback &key errback owner)
-  "Read a recommended live-room PAGE."
+  "Read recommended live-room PAGE and call CALLBACK.
+
+ERRBACK receives failures; OWNER controls request cancellation."
   (bili-api-get
    bili-api--live-root "/xlive/web-interface/v1/webMain/getMoreRecList"
    `((platform . "web") (web_location . "444.8") (page . ,page))
