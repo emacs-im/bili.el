@@ -431,16 +431,16 @@
      (list bili-detail-row-key-property key
            'rear-nonsticky (list bili-detail-row-key-property)))))
 
-(defun bili-detail--sync (view invalidations)
+(defun bili-detail--sync (view invalidations _events)
   "Synchronize detail VIEW from INVALIDATIONS."
   (let* ((state (bili-detail--state view))
          (position (or (plist-get state :position-intent) 'preserve)))
     (setf (plist-get state :position-intent) nil)
     (with-current-buffer (appkit-view-buffer view)
-      (appkit-projection-sync
-       view (bili-detail--rows view state)
-       :changed-dependencies (appkit-invalidations-resource-keys invalidations)
-       :position position)
+      (appkit-projection-sync-invalidations
+          view invalidations (bili-detail--rows view state)
+        :reconcile-parts '(details)
+        :position position)
       (force-mode-line-update))))
 
 

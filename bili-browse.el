@@ -258,20 +258,16 @@ Set this to nil to disable automatic pagination."
         view (plist-get entry :entity-key)))
       (_ (error "Unknown Bilibili catalog row type: %S" type)))))
 
-(defun bili-browse--catalog-sync (view invalidations)
+(defun bili-browse--catalog-sync (view invalidations _events)
   "Synchronize catalog VIEW from INVALIDATIONS."
   (let* ((state (bili-browse--catalog-state view))
-         (position (or (plist-get state :position-intent) 'preserve))
-         (force-keys
-          (and (memq 'geometry (appkit-invalidations-parts invalidations))
-               (copy-sequence (plist-get state :items)))))
+         (position (or (plist-get state :position-intent) 'preserve)))
     (setf (plist-get state :position-intent) nil)
     (with-current-buffer (appkit-view-buffer view)
-      (appkit-projection-sync
-       view (bili-browse--catalog-project view state)
-       :force-keys force-keys
-       :changed-dependencies (appkit-invalidations-resource-keys invalidations)
-       :position position)
+      (appkit-projection-sync-invalidations
+          view invalidations (bili-browse--catalog-project view state)
+        :reconcile-parts '(catalog)
+        :position position)
       (force-mode-line-update)
       (when (appkit-scroll-observer-p bili-browse--scroll-observer)
         (appkit-scroll-observer-check bili-browse--scroll-observer)))))

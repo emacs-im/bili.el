@@ -274,16 +274,16 @@ AID identifies the video; ROOT-ID identifies COMMENT's canonical root."
        (bili-comment--insert-action text (plist-get entry :action)))
       (_ (error "Unknown Bilibili comment row type: %S" type)))))
 
-(defun bili-comment--sync (view invalidations)
+(defun bili-comment--sync (view invalidations _events)
   "Synchronize comment VIEW from INVALIDATIONS."
   (let* ((state (bili-comment--state view))
          (position (or (plist-get state :position-intent) 'preserve)))
     (setf (plist-get state :position-intent) nil)
     (with-current-buffer (appkit-view-buffer view)
-      (appkit-projection-sync
-       view (bili-comment--project view state)
-       :changed-dependencies (appkit-invalidations-resource-keys invalidations)
-       :position position)
+      (appkit-projection-sync-invalidations
+          view invalidations (bili-comment--project view state)
+        :reconcile-parts '(comments)
+        :position position)
       (force-mode-line-update))))
 
 (defun bili-comment--new-ids (current candidates)
