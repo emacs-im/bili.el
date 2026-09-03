@@ -463,6 +463,28 @@ ERRBACK receives failures; OWNER controls request cancellation."
      (page_size . ,page-size))
    callback :errback errback :owner owner))
 
+(cl-defun bili-api-video-comments
+    (aid callback &key offset (mode 3) errback owner)
+  "Read one cursor page of comments for video AID.
+
+OFFSET is the opaque cursor returned by the previous response.  MODE is 3 for
+popular order or 2 for newest order.  CALLBACK receives response data;
+ERRBACK receives failures and OWNER controls request cancellation."
+  (unless (and (integerp aid) (> aid 0))
+    (error "Bilibili comment AID must be positive"))
+  (unless (memq mode '(2 3))
+    (error "Bilibili comment mode must be 2 or 3"))
+  (unless (or (null offset)
+              (and (stringp offset) (not (string-empty-p offset))))
+    (error "Bilibili comment cursor must be non-empty"))
+  (bili-api-wbi-get
+   bili-api--web-root "/x/v2/reply/wbi/main"
+   (append
+    `((type . 1) (oid . ,aid) (mode . ,mode) (web_location . 1315875))
+    (when offset
+      `((pagination_str . ,(json-encode `((offset . ,offset)))))))
+   callback :errback errback :owner owner))
+
 (cl-defun bili-api-live-room-init (room-id callback &key errback owner)
   "Resolve ROOM-ID and pass canonical room data to CALLBACK.
 

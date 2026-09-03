@@ -24,6 +24,7 @@
   "Canonical state owned by one bili.el Appkit application."
   revision
   catalog
+  comments
   videos
   rooms
   covers
@@ -35,6 +36,7 @@
   (bili-core--session-create
    :revision 0
    :catalog (make-hash-table :test #'equal)
+   :comments (make-hash-table :test #'equal)
    :videos (make-hash-table :test #'equal)
    :rooms (make-hash-table :test #'equal)
    :covers (make-hash-table :test #'equal)))
@@ -116,6 +118,37 @@ changed."
 (defun bili-core-catalog-item (app key)
   "Return APP's canonical catalog item at KEY, or nil."
   (gethash key (bili-core-session-catalog (bili-core-session app))))
+
+(defun bili-core-store-comments (app aid comments)
+  "Store normalized COMMENTS for video AID in APP and return their ids.
+
+Observe the batch once and invalidate only changed comment resources."
+  (unless (and (integerp aid) (> aid 0))
+    (error "Invalid Bilibili comment AID"))
+  (dolist (comment comments)
+    (unless (bili-comment-p comment)
+      (error "Invalid Bilibili comment")))
+  (let ((session (bili-core-session app))
+        ids
+        changed)
+    (dolist (comment comments)
+      (let* ((id (bili-comment-id comment))
+             (key (cons aid id)))
+        (push id ids)
+        (unless (equal comment
+                       (gethash key (bili-core-session-comments session)))
+          (puthash key comment (bili-core-session-comments session))
+          (push id changed))))
+    (when changed
+      (bili-core-observe app)
+      (dolist (id changed)
+        (bili-core-invalidate-resource app (list 'comment aid id))))
+    (nreverse ids)))
+
+(defun bili-core-comment (app aid comment-id)
+  "Return APP's canonical COMMENT-ID for video AID, or nil."
+  (gethash (cons aid comment-id)
+           (bili-core-session-comments (bili-core-session app))))
 
 (defun bili-core-cover-state (app key)
   "Return APP's canonical cover acquisition state at stable entity KEY."
