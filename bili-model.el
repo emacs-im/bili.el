@@ -277,6 +277,40 @@ Unsupported advertisements and non-video destinations return nil."
       ("live" (bili-model--recommended-live-catalog-item data))
       (_ nil))))
 
+(defun bili-model-comment-from-json (data &optional nested-p)
+  "Adapt comment DATA into a normalized comment.
+
+When NESTED-P is non-nil, do not recurse beyond this reply preview.  Return nil
+for malformed entries."
+  (condition-case nil
+      (let* ((id (bili-model--number
+                  (or (alist-get 'rpid data) (alist-get 'rpid_str data))))
+             (member (alist-get 'member data))
+             (content (alist-get 'content data))
+             (replies
+              (unless nested-p
+                (delq nil
+                      (mapcar
+                       (lambda (reply)
+                         (bili-model-comment-from-json reply t))
+                       (alist-get 'replies data))))))
+        (unless (> id 0)
+          (error "Bilibili comment has no valid id"))
+        (bili-comment-create
+         :id id
+         :author (bili-model--one-line (alist-get 'uname member))
+         :author-id (bili-model--number
+                     (or (alist-get 'mid member) (alist-get 'mid data)))
+         :message (bili-model--body-text (alist-get 'message content))
+         :created-at (bili-model--number (alist-get 'ctime data))
+         :likes (bili-model--number (alist-get 'like data))
+         :reply-count
+         (max (length replies)
+              (bili-model--number
+               (or (alist-get 'rcount data) (alist-get 'count data))))
+         :replies replies))
+    (error nil)))
+
 (defun bili-model-parse-location (input)
   "Parse Bilibili URL or identifier INPUT into a `(KIND . ID)' pair."
   (let ((text (string-trim (or input "")))
