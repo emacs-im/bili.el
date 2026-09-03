@@ -548,7 +548,7 @@ QUIET suppresses echo-area messages for automatic pagination."
           :parts '(catalog geometry) :position-policy 'semantic
           :setup #'bili-browse--setup-catalog :select t)))
     (with-current-buffer (appkit-view-buffer view)
-      (appkit-view-refresh-responsive-geometry :force t))
+      (appkit-view-refresh-responsive-geometry))
     view))
 
 (defun bili-browse-recommended ()
