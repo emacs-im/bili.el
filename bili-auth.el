@@ -264,20 +264,20 @@
     (message "Opening Bilibili login window...")
     (condition-case error-data
         (let ((request
-               (browser-session-capture
-                :url bili-auth--capture-url
-                :cookies bili-auth--cookie-names
-                :output-file file
-                :profile-root bili-auth-browser-profile-root
-                :restart-running restart-running
-                :callback
-                (lambda (_metadata)
-                  (setq settled t)
-                  (bili-auth--capture-finished file))
-                :errorback
-                (lambda (failure)
-                  (setq settled t)
-                  (bili-auth--capture-failed file restart-running failure)))))
+                (browser-session-capture
+                 :url bili-auth--capture-url
+                 :cookies bili-auth--cookie-names
+                 :output-file file
+                 :profile-root bili-auth-browser-profile-root
+                 :restart-running restart-running
+                 :callback
+                 (lambda (_metadata)
+                   (setq settled t)
+                   (bili-auth--capture-finished file))
+                 :errorback
+                 (lambda (failure)
+                   (setq settled t)
+                   (bili-auth--capture-failed file restart-running failure)))))
           (unless settled
             (setq bili-auth--capture-request request
                   bili-auth--capture-file file

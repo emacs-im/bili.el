@@ -410,7 +410,6 @@ QUIET suppresses echo-area reporting if response adaptation fails."
      (bili-browse--catalog-failed
       view state phase (error-message-string error-data) quiet))))
 
-
 (defun bili-browse--dispatch-catalog
     (view state page success failure)
   "Dispatch STATE's PAGE for VIEW using SUCCESS and FAILURE callbacks."
