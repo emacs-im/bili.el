@@ -31,6 +31,12 @@
   (bili-browse-home))
 
 ;;;###autoload
+(defun bili-recommended ()
+  "Open the logged-in account's personalized Bilibili recommendations."
+  (interactive)
+  (bili-browse-recommended))
+
+;;;###autoload
 (defun bili-open (url-or-id)
   "Open the Bilibili URL-OR-ID detail view."
   (interactive (list (read-string "Bilibili URL, BV id, or live room: ")))

@@ -249,6 +249,34 @@ FALLBACK-NUMBER is used when the provider omitted a positive page number."
          :reason ""))
     (error nil)))
 
+(defun bili-model--recommended-live-catalog-item (data)
+  "Adapt personalized recommendation live DATA into a catalog item."
+  (let* ((room (alist-get 'room_info data))
+         (show (alist-get 'show room))
+         (area (alist-get 'area room))
+         (watched (alist-get 'watched_show room))
+         (owner (alist-get 'owner data)))
+    (bili-model-live-catalog-item
+     `((room_id . ,(or (alist-get 'room_id room) (alist-get 'id data)))
+       (title . ,(or (alist-get 'title data) (alist-get 'title show)))
+       (uname . ,(alist-get 'name owner))
+       (cover . ,(or (alist-get 'pic data) (alist-get 'cover show)))
+       (area_name . ,(alist-get 'area_name area))
+       (parent_area_name . ,(alist-get 'parent_area_name area))
+       (online . ,(or (alist-get 'num watched)
+                      (alist-get 'popularity_count show)))
+       (live_status . ,(alist-get 'live_status room))))))
+
+(defun bili-model-recommended-catalog-item (data)
+  "Adapt one personalized recommendation DATA object into a catalog item.
+
+Unsupported advertisements and non-video destinations return nil."
+  (when (listp data)
+    (pcase (downcase (bili-model--one-line (alist-get 'goto data)))
+      ("av" (bili-model-video-catalog-item data))
+      ("live" (bili-model--recommended-live-catalog-item data))
+      (_ nil))))
+
 (defun bili-model-parse-location (input)
   "Parse Bilibili URL or identifier INPUT into a `(KIND . ID)' pair."
   (let ((text (string-trim (or input "")))

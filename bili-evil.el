@@ -46,6 +46,7 @@ Safe to call repeatedly and before or after Evil loads."
        "g j" #'bili-browse-next-item
        "g k" #'bili-browse-previous-item
        "g h" #'bili-browse-home
+       "g f" #'bili-browse-recommended
        "g s" #'bili-browse-search
        "g e" #'bili-browse-edit-search
        "g l" #'bili-browse-live

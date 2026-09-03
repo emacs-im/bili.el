@@ -427,6 +427,29 @@ ERRBACK receives failures; OWNER controls request cancellation."
    `((pn . ,page) (ps . ,page-size))
    callback :errback errback :owner owner))
 
+(cl-defun bili-api-recommended-feed
+    (page callback &key (page-size 20) errback owner)
+  "Read account-personalized recommendation PAGE and call CALLBACK.
+
+PAGE-SIZE must be between 1 and 30.  ERRBACK receives failures; OWNER controls
+request cancellation."
+  (unless (and (integerp page) (> page 0))
+    (error "Bilibili recommendation page must be positive"))
+  (unless (and (integerp page-size) (<= 1 page-size 30))
+    (error "Bilibili recommendation page size must be between 1 and 30"))
+  (bili-api-wbi-get
+   bili-api--web-root "/x/web-interface/wbi/index/top/feed/rcmd"
+   `((fresh_type . 4)
+     (ps . ,page-size)
+     (fresh_idx . ,page)
+     (fresh_idx_1h . ,page)
+     (brush . ,page)
+     (fetch_row . ,(1+ (* (1- page) page-size)))
+     (feed_version . "V8")
+     (homepage_ver . 1)
+     (web_location . 1430650))
+   callback :errback errback :owner owner))
+
 (cl-defun bili-api-search-videos
     (query page callback &key (page-size 20) errback owner)
   "Search PAGE-SIZE videos for QUERY at PAGE, then call CALLBACK.

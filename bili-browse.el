@@ -19,6 +19,7 @@
 (require 'appkit-scroll)
 (require 'appkit-ui)
 (require 'bili-api)
+(require 'bili-auth)
 (require 'bili-cover)
 (require 'bili-core)
 (require 'bili-live)
@@ -29,6 +30,11 @@
 (defcustom bili-browse-page-size 20
   "Number of videos requested in one popular or search page."
   :type '(integer 1 50)
+  :group 'bili)
+
+(defcustom bili-browse-recommended-page-size 20
+  "Number of entries requested in one personalized recommendation page."
+  :type '(integer 1 30)
   :group 'bili)
 
 (defcustom bili-browse-auto-load-threshold 2000
@@ -62,6 +68,7 @@ Set this to nil to disable automatic pagination."
   "p" #'bili-browse-previous-item
   "g" #'bili-browse-refresh
   "h" #'bili-browse-home
+  "f" #'bili-browse-recommended
   "/" #'bili-browse-search
   "e" #'bili-browse-edit-search
   "l" #'bili-browse-live
@@ -81,7 +88,8 @@ Set this to nil to disable automatic pagination."
   (let ((state (and (appkit-view-p view) (appkit-view-state view))))
     (unless (and (listp state)
                  (eq (plist-get state :type) 'catalog)
-                 (memq (plist-get state :kind) '(home search live))
+                 (memq (plist-get state :kind)
+                       '(home recommended search live))
                  (listp (plist-get state :items))
                  (integerp (plist-get state :page))
                  (integerp (plist-get state :generation)))
@@ -103,6 +111,7 @@ Set this to nil to disable automatic pagination."
       (format " Bilibili · %s · %d items%s"
               (pcase (plist-get state :kind)
                 ('home "Popular")
+                ('recommended "For you")
                 ('live "Recommended live")
                 ('search (format "Search “%s”" (plist-get state :query))))
               (length (plist-get state :items))
@@ -122,6 +131,13 @@ Set this to nil to disable automatic pagination."
        (unless (listp items)
          (error "Bilibili popular response has no video list"))
        (delq nil (mapcar #'bili-model-video-catalog-item items))))
+    ('recommended
+     (unless (> (bili-model--number (alist-get 'mid data)) 0)
+       (error "Bilibili personalized recommendations require login"))
+     (let ((items (alist-get 'item data)))
+       (unless (listp items)
+         (error "Bilibili recommendation response has no item list"))
+       (delq nil (mapcar #'bili-model-recommended-catalog-item items))))
     ('search
      (let ((items (alist-get 'result data)))
        (unless (listp items)
@@ -350,6 +366,7 @@ already visible, PHASE the request phase, and PAGE the accepted page number."
    (and (eq phase 'older) (null new-keys))
    (pcase (plist-get state :kind)
      ('home (eq (alist-get 'no_more data) t))
+     ('recommended nil)
      ('search
       (let ((pages (bili-model--number (alist-get 'numPages data))))
         (and (> pages 0) (>= page pages))))
@@ -418,6 +435,10 @@ QUIET suppresses echo-area reporting if response adaptation fails."
     ('home
      (bili-api-popular
       page success :page-size bili-browse-page-size
+      :errback failure :owner view))
+    ('recommended
+     (bili-api-recommended-feed
+      page success :page-size bili-browse-recommended-page-size
       :errback failure :owner view))
     ('search
      (bili-api-search-videos
@@ -550,6 +571,19 @@ QUIET suppresses echo-area messages for automatic pagination."
     (with-current-buffer (appkit-view-buffer view)
       (appkit-view-refresh-responsive-geometry :force t))
     view))
+
+(defun bili-browse-recommended ()
+  "Open or reuse the logged-in account's personalized recommendation feed."
+  (interactive)
+  (bili-auth-credentials)
+  (let* ((app (bili-core-app))
+         (id '(catalog recommended))
+         (existing (appkit-view-for-id app id))
+         (state
+          (or (and existing (appkit-view-state existing))
+              (bili-browse--make-catalog-state 'recommended))))
+    (bili-browse--open-catalog
+     id "*Bilibili For You*" state)))
 
 (defun bili-browse-home ()
   "Open or reuse the popular-video catalog."
