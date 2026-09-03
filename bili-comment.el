@@ -71,8 +71,7 @@ Set this to nil to disable automatic pagination."
                  (integerp (plist-get state :aid))
                  (> (plist-get state :aid) 0)
                  (stringp (plist-get state :bvid))
-                 (listp (plist-get state :items))
-                 (integerp (plist-get state :generation)))
+                 (listp (plist-get state :items)))
       (error "Invalid Bilibili comment state"))
     state))
 
@@ -319,77 +318,61 @@ When INITIAL-P is non-nil, prepend provider-pinned comments."
         (puthash id t seen)
         (push model models)))))
 
-(defun bili-comment--request-current-p (view state token)
-  "Return non-nil when TOKEN may still update comment STATE in VIEW."
-  (and (appkit-view-live-p view)
-       (eq state (appkit-view-state view))
-       (eq token (plist-get state :request-token))))
+(defun bili-comment--operation-current-p (view state operation)
+  "Return non-nil when OPERATION may still update comment STATE in VIEW."
+  (and (eq state (appkit-view-state view))
+       (appkit-view-operation-current-p operation)))
 
-(defun bili-comment--cancel-request (view state)
-  "Cancel VIEW's active comment request for STATE."
-  (setf (plist-get state :request-token) nil)
-  (bili-core-cancel-view-request
-   view bili-comment--request-key #'bili-api-cancel))
+(defun bili-comment--failed (view state phase message &optional quiet)
+  "Install request failure MESSAGE for PHASE in VIEW and STATE."
+  (setf (plist-get state :phase) 'error
+        (plist-get state :failed-phase) phase
+        (plist-get state :message) message)
+  (appkit-request-sync view :structure t :part 'comments :position t)
+  (unless quiet
+    (message "%s" message)))
 
-(defun bili-comment--retire-request (view state token)
-  "Retire VIEW's comment transport when TOKEN still owns STATE."
-  (when (bili-comment--request-current-p view state token)
-    (remhash bili-comment--request-key (appkit-view-request-table view))))
-
-(defun bili-comment--failed (view state token phase message &optional quiet)
-  "Install request failure MESSAGE for PHASE when TOKEN owns VIEW and STATE."
-  (when (bili-comment--request-current-p view state token)
-    (setf (plist-get state :request-token) nil
-          (plist-get state :phase) 'error
-          (plist-get state :failed-phase) phase
-          (plist-get state :message) message)
-    (appkit-request-sync view :structure t :part 'comments :position t)
-    (unless quiet
-      (message "%s" message))))
-
-(defun bili-comment--succeeded (view state token phase data)
-  "Install comment DATA for PHASE when TOKEN owns VIEW and STATE."
-  (when (bili-comment--request-current-p view state token)
-    (condition-case error-data
-        (let* ((cursor (alist-get 'cursor data))
-               (models (bili-comment--response-models
-                        data (not (eq phase 'older))))
-               (app (appkit-view-app view))
-               (ids (bili-core-store-comments
-                     app (plist-get state :aid) models))
-               (current (plist-get state :items))
-               (new (if (eq phase 'older)
-                        (bili-comment--new-ids current ids)
-                      ids))
-               (pagination (alist-get 'pagination_reply cursor))
-               (next-offset (alist-get 'next_offset pagination)))
-          (unless (listp cursor)
-            (error "Bilibili comment response has no cursor"))
-          (setf (plist-get state :items)
-                (if (eq phase 'older) (append current new) ids)
-                (plist-get state :cursor)
-                (and (stringp next-offset)
-                     (not (string-empty-p next-offset))
-                     next-offset)
-                (plist-get state :total)
-                (bili-model--number (alist-get 'all_count cursor))
-                (plist-get state :phase) 'ready
-                (plist-get state :failed-phase) nil
-                (plist-get state :message) nil
-                (plist-get state :request-token) nil
-                (plist-get state :loaded-p) t
-                (plist-get state :position-intent)
-                (and (eq phase 'initial) 'first)
-                (plist-get state :exhausted-p)
-                (or (eq (alist-get 'is_end cursor) t)
-                    (null models)
-                    (and (eq phase 'older) (null new))
-                    (null next-offset)))
-          (appkit-request-sync
-           view :structure t :part 'comments :position t))
-      (error
-       (bili-comment--failed
-        view state token phase (error-message-string error-data) t)))))
+(defun bili-comment--succeeded (view state phase data)
+  "Install comment DATA for PHASE in VIEW and STATE."
+  (condition-case error-data
+      (let* ((cursor (alist-get 'cursor data))
+             (models (bili-comment--response-models
+                      data (not (eq phase 'older))))
+             (app (appkit-view-app view))
+             (ids (bili-core-store-comments
+                   app (plist-get state :aid) models))
+             (current (plist-get state :items))
+             (new (if (eq phase 'older)
+                      (bili-comment--new-ids current ids)
+                    ids))
+             (pagination (alist-get 'pagination_reply cursor))
+             (next-offset (alist-get 'next_offset pagination)))
+        (unless (listp cursor)
+          (error "Bilibili comment response has no cursor"))
+        (setf (plist-get state :items)
+              (if (eq phase 'older) (append current new) ids)
+              (plist-get state :cursor)
+              (and (stringp next-offset)
+                   (not (string-empty-p next-offset))
+                   next-offset)
+              (plist-get state :total)
+              (bili-model--number (alist-get 'all_count cursor))
+              (plist-get state :phase) 'ready
+              (plist-get state :failed-phase) nil
+              (plist-get state :message) nil
+              (plist-get state :loaded-p) t
+              (plist-get state :position-intent)
+              (and (eq phase 'initial) 'first)
+              (plist-get state :exhausted-p)
+              (or (eq (alist-get 'is_end cursor) t)
+                  (null models)
+                  (and (eq phase 'older) (null new))
+                  (null next-offset)))
+        (appkit-request-sync
+         view :structure t :part 'comments :position t))
+    (error
+     (bili-comment--failed
+      view state phase (error-message-string error-data) t))))
 
 (defun bili-comment--request (view phase &optional quiet)
   "Start comment VIEW request for PHASE.
@@ -400,12 +383,13 @@ QUIET suppresses echo-area messages for automatic pagination."
   (let ((state (bili-comment--state view)))
     (when (and (eq phase 'older) (plist-get state :exhausted-p))
       (user-error "No more Bilibili comments"))
-    (let ((offset (and (eq phase 'older) (plist-get state :cursor)))
-          token callback-ran-p request)
-      (bili-comment--cancel-request view state)
-      (setq token (cl-incf (plist-get state :generation)))
-      (setf (plist-get state :request-token) token
-            (plist-get state :phase) phase
+    (let* ((offset (and (eq phase 'older) (plist-get state :cursor)))
+           (operation
+            (appkit-view-operation-begin
+             view bili-comment--request-key
+             :cancel-function #'bili-api-cancel))
+           request)
+      (setf (plist-get state :phase) phase
             (plist-get state :failed-phase) nil
             (plist-get state :message) nil)
       (appkit-request-sync view :structure t :part 'comments :position t)
@@ -413,27 +397,24 @@ QUIET suppresses echo-area messages for automatic pagination."
             (bili-api-video-comments
              (plist-get state :aid)
              (lambda (data)
-               (setq callback-ran-p t)
-               (bili-comment--retire-request view state token)
-               (bili-comment--succeeded view state token phase data))
+               (when (bili-comment--operation-current-p
+                      view state operation)
+                 (appkit-view-operation-finish operation)
+                 (bili-comment--succeeded view state phase data)))
              :offset offset
              :errback
              (lambda (message)
-               (setq callback-ran-p t)
-               (bili-comment--retire-request view state token)
-               (bili-comment--failed
-                view state token phase message quiet))
+               (when (bili-comment--operation-current-p
+                      view state operation)
+                 (appkit-view-operation-finish operation)
+                 (bili-comment--failed view state phase message quiet)))
              :owner view))
-      (cond
-       ((and request (not callback-ran-p)
-             (bili-comment--request-current-p view state token))
-        (puthash bili-comment--request-key request
-                 (appkit-view-request-table view)))
-       ((and (null request) (not callback-ran-p)
-             (bili-comment--request-current-p view state token))
+      (appkit-view-operation-bind operation request)
+      (when (and (null request)
+                 (bili-comment--operation-current-p view state operation))
+        (appkit-view-operation-finish operation)
         (bili-comment--failed
-         view state token phase
-         "Bilibili comment request did not start" quiet)))
+         view state phase "Bilibili comment request did not start" quiet))
       request)))
 
 (defun bili-comment--maybe-auto-load (view _window position end)
@@ -445,7 +426,6 @@ QUIET suppresses echo-area messages for automatic pagination."
     (let ((state (bili-comment--state view)))
       (when (and (plist-get state :loaded-p)
                  (eq (plist-get state :phase) 'ready)
-                 (null (plist-get state :request-token))
                  (not (plist-get state :exhausted-p)))
         (bili-comment--request view 'older t)))))
 
@@ -495,7 +475,6 @@ QUIET suppresses echo-area messages for automatic pagination."
         :bvid (bili-video-bvid video)
         :items nil :cursor nil :total nil
         :phase 'initial :failed-phase nil :message nil
-        :request-token nil :generation 0
         :loaded-p nil :exhausted-p nil :position-intent nil))
 
 (defun bili-comment-open (video)

@@ -308,7 +308,7 @@ ACCEPTED-CODES permits explicitly useful nonzero provider response codes."
            :owner request-owner :callback callback :errback error-fn)))
     (unless (functionp error-fn)
       (error "Bilibili request error callback is not callable"))
-    (unless (bili-core-owner-live-p request-owner)
+    (unless (appkit-owner-live-p request-owner)
       (error "Bilibili request owner is not live"))
     (setf (bili-api-request-handle request)
           (appkit-register-handle

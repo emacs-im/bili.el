@@ -5,7 +5,7 @@
 
 ;;; Commentary:
 
-;; Own catalog view state, request generations, Appkit rich-card projections,
+;; Own catalog view state, Appkit operation slots, rich-card projections,
 ;; endpoint-aware pagination, and resource navigation.
 
 ;;; Code:
@@ -91,8 +91,7 @@ Set this to nil to disable automatic pagination."
                  (memq (plist-get state :kind)
                        '(home recommended search live))
                  (listp (plist-get state :items))
-                 (integerp (plist-get state :page))
-                 (integerp (plist-get state :generation)))
+                 (integerp (plist-get state :page)))
       (error "Invalid Bilibili catalog state"))
     state))
 
@@ -329,31 +328,22 @@ Set this to nil to disable automatic pagination."
   (interactive "p")
   (bili-browse--move-item (- (or count 1))))
 
-(defun bili-browse--catalog-request-current-p (view state token)
-  "Return non-nil when TOKEN may still update catalog STATE in VIEW."
-  (and (appkit-view-live-p view)
-       (eq state (appkit-view-state view))
-       (eq token (plist-get state :request-token))))
-
-(defun bili-browse--catalog-retire-request (view state token)
-  "Retire VIEW's catalog transport when TOKEN still owns STATE."
-  (when (bili-browse--catalog-request-current-p view state token)
-    (remhash bili-browse--catalog-request-key
-             (appkit-view-request-table view))))
+(defun bili-browse--catalog-operation-current-p (view state operation)
+  "Return non-nil when OPERATION may still update catalog STATE in VIEW."
+  (and (eq state (appkit-view-state view))
+       (appkit-view-operation-current-p operation)))
 
 (defun bili-browse--catalog-failed
-    (view state token phase message &optional quiet)
-  "Install catalog failure MESSAGE for PHASE when TOKEN owns VIEW and STATE.
+    (view state phase message &optional quiet)
+  "Install catalog failure MESSAGE for PHASE in VIEW and STATE.
 
 When QUIET is non-nil, keep the failure in the view without echo-area noise."
-  (when (bili-browse--catalog-request-current-p view state token)
-    (setf (plist-get state :request-token) nil
-          (plist-get state :phase) 'error
-          (plist-get state :failed-phase) phase
-          (plist-get state :message) message)
-    (appkit-request-sync view :structure t :part 'catalog :position t)
-    (unless quiet
-      (message "%s" message))))
+  (setf (plist-get state :phase) 'error
+        (plist-get state :failed-phase) phase
+        (plist-get state :message) message)
+  (appkit-request-sync view :structure t :part 'catalog :position t)
+  (unless quiet
+    (message "%s" message)))
 
 (defun bili-browse--catalog-exhausted-p
     (state data models new-keys phase page)
@@ -384,49 +374,42 @@ already visible, PHASE the request phase, and PAGE the accepted page number."
         (plist-get state :page) page))
 
 (defun bili-browse--catalog-succeeded
-    (view state token phase page data &optional quiet)
-  "Install catalog DATA for PAGE and PHASE when TOKEN owns VIEW and STATE.
+    (view state phase page data &optional quiet)
+  "Install catalog DATA for PAGE and PHASE in VIEW and STATE.
 
 QUIET suppresses echo-area reporting if response adaptation fails."
-  (when (bili-browse--catalog-request-current-p view state token)
-    (condition-case error-data
-        (let* ((models (bili-browse--catalog-item-list state data))
-               (app (appkit-view-app view))
-               (keys (bili-core-store-catalog-items app models))
-               (current (plist-get state :items))
-               (new (if (eq phase 'older)
-                        (bili-browse--new-keys current keys)
-                      keys)))
-          (dolist (model models)
-            (bili-cover-prefetch
-             app
-             (list (bili-catalog-item-kind model)
-                   (bili-catalog-item-id model))
-             (bili-catalog-item-cover model)))
-          (bili-browse--catalog-record-pagination state data page)
-          (setf (plist-get state :items)
-                (if (eq phase 'older) (append current new) keys)
-                (plist-get state :phase) 'ready
-                (plist-get state :failed-phase) nil
-                (plist-get state :message) nil
-                (plist-get state :request-token) nil
-                (plist-get state :loaded-p) t
-                (plist-get state :position-intent)
-                (and (eq phase 'initial) 'first)
-                (plist-get state :exhausted-p)
-                (bili-browse--catalog-exhausted-p
-                 state data models new phase page))
-          (appkit-request-sync
-           view :structure t :part 'catalog :position t))
-      (error
-       (bili-browse--catalog-failed
-        view state token phase (error-message-string error-data) quiet)))))
+  (condition-case error-data
+      (let* ((models (bili-browse--catalog-item-list state data))
+             (app (appkit-view-app view))
+             (keys (bili-core-store-catalog-items app models))
+             (current (plist-get state :items))
+             (new (if (eq phase 'older)
+                      (bili-browse--new-keys current keys)
+                    keys)))
+        (dolist (model models)
+          (bili-cover-prefetch
+           app
+           (list (bili-catalog-item-kind model)
+                 (bili-catalog-item-id model))
+           (bili-catalog-item-cover model)))
+        (bili-browse--catalog-record-pagination state data page)
+        (setf (plist-get state :items)
+              (if (eq phase 'older) (append current new) keys)
+              (plist-get state :phase) 'ready
+              (plist-get state :failed-phase) nil
+              (plist-get state :message) nil
+              (plist-get state :loaded-p) t
+              (plist-get state :position-intent)
+              (and (eq phase 'initial) 'first)
+              (plist-get state :exhausted-p)
+              (bili-browse--catalog-exhausted-p
+               state data models new phase page))
+        (appkit-request-sync
+         view :structure t :part 'catalog :position t))
+    (error
+     (bili-browse--catalog-failed
+      view state phase (error-message-string error-data) quiet))))
 
-(defun bili-browse--cancel-catalog-request (view state)
-  "Cancel VIEW's active catalog transport for STATE."
-  (setf (plist-get state :request-token) nil)
-  (bili-core-cancel-view-request
-   view bili-browse--catalog-request-key #'bili-api-cancel))
 
 (defun bili-browse--dispatch-catalog
     (view state page success failure)
@@ -457,16 +440,15 @@ QUIET suppresses echo-area messages for automatic pagination."
   (let ((state (bili-browse--catalog-state view)))
     (when (and (eq phase 'older) (plist-get state :exhausted-p))
       (user-error "No more Bilibili results"))
-    (let ((page (if (eq phase 'older)
-                    (1+ (plist-get state :page))
-                  1))
-          token
-          callback-ran-p
-          request)
-      (bili-browse--cancel-catalog-request view state)
-      (setq token (cl-incf (plist-get state :generation)))
-      (setf (plist-get state :request-token) token
-            (plist-get state :phase) phase
+    (let* ((page (if (eq phase 'older)
+                     (1+ (plist-get state :page))
+                   1))
+           (operation
+            (appkit-view-operation-begin
+             view bili-browse--catalog-request-key
+             :cancel-function #'bili-api-cancel))
+           request)
+      (setf (plist-get state :phase) phase
             (plist-get state :failed-phase) nil
             (plist-get state :message) nil)
       (appkit-request-sync view :structure t :part 'catalog :position t)
@@ -474,25 +456,24 @@ QUIET suppresses echo-area messages for automatic pagination."
             (bili-browse--dispatch-catalog
              view state page
              (lambda (data)
-               (setq callback-ran-p t)
-               (bili-browse--catalog-retire-request view state token)
-               (bili-browse--catalog-succeeded
-                view state token phase page data quiet))
+               (when (bili-browse--catalog-operation-current-p
+                      view state operation)
+                 (appkit-view-operation-finish operation)
+                 (bili-browse--catalog-succeeded
+                  view state phase page data quiet)))
              (lambda (message)
-               (setq callback-ran-p t)
-               (bili-browse--catalog-retire-request view state token)
-               (bili-browse--catalog-failed
-                view state token phase message quiet))))
-      (cond
-       ((and request (not callback-ran-p)
-             (bili-browse--catalog-request-current-p view state token))
-        (puthash bili-browse--catalog-request-key request
-                 (appkit-view-request-table view)))
-       ((and (null request) (not callback-ran-p)
-             (bili-browse--catalog-request-current-p view state token))
+               (when (bili-browse--catalog-operation-current-p
+                      view state operation)
+                 (appkit-view-operation-finish operation)
+                 (bili-browse--catalog-failed
+                  view state phase message quiet)))))
+      (appkit-view-operation-bind operation request)
+      (when (and (null request)
+                 (bili-browse--catalog-operation-current-p
+                  view state operation))
+        (appkit-view-operation-finish operation)
         (bili-browse--catalog-failed
-         view state token phase
-         "Bilibili catalog request did not start" quiet)))
+         view state phase "Bilibili catalog request did not start" quiet))
       request)))
 
 (defun bili-browse--maybe-auto-load
@@ -505,7 +486,6 @@ QUIET suppresses echo-area messages for automatic pagination."
     (let ((state (bili-browse--catalog-state view)))
       (when (and (plist-get state :loaded-p)
                  (eq (plist-get state :phase) 'ready)
-                 (null (plist-get state :request-token))
                  (not (plist-get state :exhausted-p)))
         (bili-browse--catalog-request view 'older t)))))
 
@@ -556,7 +536,6 @@ QUIET suppresses echo-area messages for automatic pagination."
   (list :type 'catalog :kind kind :query query :items nil :page 0
         :total-items nil :total-pages nil
         :phase 'initial :failed-phase nil :message nil
-        :request-token nil :generation 0
         :loaded-p nil :exhausted-p nil :position-intent nil))
 
 (defun bili-browse--open-catalog (id buffer-name state)

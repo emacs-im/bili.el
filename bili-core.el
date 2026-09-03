@@ -199,22 +199,6 @@ changes."
   "Return APP's canonical live ROOM-ID, or nil."
   (gethash room-id (bili-core-session-rooms (bili-core-session app))))
 
-(defun bili-core-owner-live-p (owner)
-  "Return non-nil when Appkit OWNER can receive a callback."
-  (cond
-   ((appkit-view-p owner) (appkit-view-live-p owner))
-   ((appkit-app-p owner) (appkit-app-live-p owner))
-   (t nil)))
-
-(defun bili-core-cancel-view-request (view request-key cancel-function)
-  "Remove VIEW's REQUEST-KEY and pass its transport to CANCEL-FUNCTION."
-  (unless (functionp cancel-function)
-    (error "Bilibili request cancel function is not callable"))
-  (let* ((table (appkit-view-request-table view))
-         (request (gethash request-key table)))
-    (remhash request-key table)
-    (when request
-      (funcall cancel-function request))))
 
 (provide 'bili-core)
 
