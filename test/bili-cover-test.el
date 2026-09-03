@@ -86,7 +86,7 @@
    (bili-cover-normalize-url "https://user@i0.hdslb.com/a.jpg"))
   (should-not
    (bili-cover-normalize-url "https://i0.hdslb.com:444/a.jpg")))
-(ert-deftest bili-cover-catalog-produces-four-fixed-width-slices ()
+(ert-deftest bili-cover-catalog-produces-four-display-only-slices ()
   (let* ((app (bili-core-app))
          (view
           (appkit-open-view
@@ -108,13 +108,15 @@
                               (propertize
                                " " 'display (list 'slice index))))))
           (with-current-buffer buffer
-            (let ((rows
-                   (bili-cover-catalog-slice-rows
-                    view '(video "BV1") "https://i0.hdslb.com/a.jpg")))
+            (pcase-let
+                ((`(,columns . ,rows)
+                  (bili-cover-catalog-slices
+                   view '(video "BV1") "https://i0.hdslb.com/a.jpg")))
+              (should (>= columns 8))
               (should (= (length rows) 4))
-              (should (apply #'= (mapcar #'string-width rows)))
               (cl-loop for row in rows
                        for index from 0
+                       do (should (= (length row) 1))
                        do (should-not (string-match-p "\n" row))
                        do (should
                            (equal (get-text-property 0 'display row)

@@ -31,6 +31,10 @@
   kind id title subtitle cover metric duration secondary-metric area live-status
   published-at reason)
 
+(cl-defstruct (bili-comment (:constructor bili-comment-create))
+  "One normalized Bilibili root comment or reply preview."
+  id author author-id message created-at likes reply-count replies)
+
 (defun bili-model--text (value)
   "Return VALUE as text, defaulting null-like values to empty text."
   (cond
@@ -246,7 +250,9 @@ FALLBACK-NUMBER is used when the provider omitted a positive page number."
          :area area
          :live-status status
          :published-at 0
-         :reason ""))
+         :reason (bili-model--one-line
+                  (or (alist-get 'reason data)
+                      (alist-get 'content (alist-get 'rcmd_reason data))))))
     (error nil)))
 
 (defun bili-model--recommended-live-catalog-item (data)
@@ -265,6 +271,7 @@ FALLBACK-NUMBER is used when the provider omitted a positive page number."
        (parent_area_name . ,(alist-get 'parent_area_name area))
        (online . ,(or (alist-get 'num watched)
                       (alist-get 'popularity_count show)))
+       (rcmd_reason . ,(alist-get 'rcmd_reason data))
        (live_status . ,(alist-get 'live_status room))))))
 
 (defun bili-model-recommended-catalog-item (data)

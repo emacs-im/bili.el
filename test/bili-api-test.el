@@ -108,6 +108,37 @@
        (bili-api-popular 1 #'ignore :page-size 0))
       (should-error
        (bili-api-search-videos "query" 1 #'ignore :page-size 51)))))
+(ert-deftest bili-api-recommended-feed-uses-wbi-pagination-contract ()
+  (let (root path params options)
+    (cl-letf (((symbol-function 'bili-api-wbi-get)
+               (lambda (request-root request-path request-params
+                        _callback &rest request-options)
+                 (setq root request-root
+                       path request-path
+                       params request-params
+                       options request-options)
+                 'recommendation-request)))
+      (should
+       (eq (bili-api-recommended-feed
+            3 #'ignore :page-size 20 :owner 'view :errback #'ignore)
+           'recommendation-request))
+      (should (equal root "https://api.bilibili.com"))
+      (should (equal path "/x/web-interface/wbi/index/top/feed/rcmd"))
+      (should (= (alist-get 'fresh_type params) 4))
+      (should (= (alist-get 'ps params) 20))
+      (should (= (alist-get 'fresh_idx params) 3))
+      (should (= (alist-get 'fresh_idx_1h params) 3))
+      (should (= (alist-get 'brush params) 3))
+      (should (= (alist-get 'fetch_row params) 41))
+      (should (equal (alist-get 'feed_version params) "V8"))
+      (should (= (alist-get 'homepage_ver params) 1))
+      (should (= (alist-get 'web_location params) 1430650))
+      (should (eq (plist-get options :owner) 'view))
+      (should-error
+       (bili-api-recommended-feed 0 #'ignore))
+      (should-error
+       (bili-api-recommended-feed 1 #'ignore :page-size 31)))))
+
 (provide 'bili-api-test)
 
 ;;; bili-api-test.el ends here

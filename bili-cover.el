@@ -249,12 +249,12 @@ function performs no network I/O; `bili-cover-prefetch' owns acquisition."
             (puthash identity image bili-cover--image-cache)
             image)))))
 
-(defun bili-cover-catalog-slice-rows (view entity-key url)
-  "Return aligned cover slice rows for VIEW, ENTITY-KEY, and URL.
+(defun bili-cover-catalog-slices (view entity-key url)
+  "Return `(COLUMNS . ROWS)' for ENTITY-KEY's catalog cover in VIEW.
 
-The exact row count follows `bili-cover-catalog-lines'.  Each slice retains a
-fixed-width textual fallback so right-hand metadata can use ordinary column
-layout before and after the image arrives."
+URL identifies the current public cover revision.  ROWS are display-only image
+slices or fixed-width display spaces.  The buffer therefore contains no cover
+padding, and loading an image cannot shift the right-hand card content."
   (let* ((app (appkit-view-app view))
          (frame (bili-cover--display-frame view))
          (line-count (min 4 (max 3 bili-cover-catalog-lines)))
@@ -271,20 +271,21 @@ layout before and after the image arrives."
                (with-selected-frame frame
                  (appkit-media-image-slice-rows image))))
          rows)
-    (let ((index 0))
-      (while (< index line-count)
-        (let* ((fallback (make-string columns ?\s))
-               (source (nth index source-rows))
-               (display (and source (get-text-property 0 'display source)))
-               (row (propertize fallback
-                                'help-echo (or url "Cover unavailable")
-                                'face (and (null display) 'shadow)
-                                'rear-nonsticky '(display))))
-          (when display
-            (put-text-property 0 (length row) 'display display row))
-          (push row rows))
-        (setq index (1+ index))))
-    (nreverse rows)))
+    (dotimes (index line-count)
+      (let ((row
+             (or (copy-sequence (nth index source-rows))
+                 (propertize
+                  " " 'display
+                  `(space :width
+                          ,(if (display-graphic-p frame)
+                               (list width)
+                             columns))))))
+        (add-text-properties
+         0 (length row) (list 'help-echo (or url "Cover unavailable")
+                              'rear-nonsticky '(display))
+         row)
+        (push row rows)))
+    (cons columns (nreverse rows))))
 
 (defun bili-cover-detail-image (view entity-key url)
   "Return a responsive 16:9 cover image for VIEW, ENTITY-KEY, and URL."

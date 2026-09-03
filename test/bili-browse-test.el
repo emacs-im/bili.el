@@ -51,6 +51,21 @@
               (dolist (property '(mouse-face keymap local-map follow-link))
                 (should-not (get-text-property start property)))
               (should start)
+              (should (eq (char-after start) ?T))
+              (save-excursion
+                (goto-char start)
+                (dotimes (_ 4)
+                  (should
+                   (stringp (get-text-property (point) 'line-prefix)))
+                  (forward-line 1)))
+              (save-excursion
+                (goto-char start)
+                (should (search-forward "00:09" end t))
+                (let ((display
+                       (get-text-property
+                        (1- (match-beginning 0)) 'display)))
+                  (should (eq (car-safe display) 'space))
+                  (should (eq (nth 1 display) :align-to))))
               (should (= (count-lines start end) 4)))))
       (when (appkit-view-live-p view)
         (appkit-kill-view view t))
@@ -125,6 +140,55 @@
       (dolist (buffer (list home-buffer search-buffer))
         (when (buffer-live-p buffer)
           (kill-buffer buffer))))))
+
+(ert-deftest bili-browse-personalized-feed-is-distinct-and-account-gated ()
+  (let ((first-page
+         '(((goto . "av")
+            (bvid . "BV1feed")
+            (title . "Personal video")
+            (owner . ((name . "Uploader")))
+            (stat . ((view . 12) (danmaku . 3)))
+            (duration . 61))
+           ((goto . "ad") (title . "Advertisement"))
+           ((goto . "live")
+            (id . 99)
+            (title . "Personal live")
+            (owner . ((name . "Streamer")))
+            (room_info . ((room_id . 99) (live_status . 1))))))
+        view buffer credential-checks requested-pages)
+    (unwind-protect
+        (cl-letf
+            (((symbol-function 'bili-auth-credentials)
+              (lambda ()
+                (setq credential-checks (1+ (or credential-checks 0)))
+                '(:sessdata "present")))
+             ((symbol-function 'bili-api-recommended-feed)
+              (lambda (page callback &rest options)
+                (push page requested-pages)
+                (should (= (plist-get options :page-size) 20))
+                (funcall
+                 callback
+                 (list (cons 'mid 42)
+                       (cons 'item (and (= page 1) first-page)))))))
+          (setq view (bili-browse-recommended)
+                buffer (appkit-view-buffer view))
+          (should (= credential-checks 1))
+          (should (equal (appkit-view-id view) '(catalog recommended)))
+          (should (equal (nreverse requested-pages) '(1 2)))
+          (appkit-sync-invalidations view)
+          (let ((state (appkit-view-state view)))
+            (should (eq (plist-get state :kind) 'recommended))
+            (should (= (length (plist-get state :items)) 2))
+            (should (plist-get state :exhausted-p)))
+          (with-current-buffer buffer
+            (should (string-match-p "For you"
+                                    (bili-browse--header-line)))
+            (should (string-match-p "Personal video" (buffer-string)))
+            (should (string-match-p "Personal live" (buffer-string)))
+            (should-not (string-match-p "Advertisement" (buffer-string)))))
+      (bili-core-stop)
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
 
 (ert-deftest bili-browse-live-pagination-follows-window-edge ()
   (let (view buffer observer requested-pages)

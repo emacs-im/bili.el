@@ -92,8 +92,8 @@
            (> fill-column 0)
            fill-column)
       80))
-(defun bili-render--catalog-content-line (left right width)
-  "Return LEFT and RIGHT arranged within WIDTH text columns."
+(defun bili-render--catalog-content-parts (left right width)
+  "Return `(LEFT . RIGHT)' constrained to WIDTH text columns."
   (let* ((right (or right ""))
          (right-width (min (string-width right) (max 0 (/ width 3))))
          (right (if (> (string-width right) right-width)
@@ -103,28 +103,26 @@
          (gap (if (string-empty-p right) 0 1))
          (left-width (max 1 (- width (string-width right) gap)))
          (left (appkit-view-elide-string-for-columns
-                (or left "") left-width 'default))
-         (padding (max gap (- width (string-width left)
-                              (string-width right)))))
-    (concat left (make-string padding ?\s) right)))
+                (or left "") left-width 'default)))
+    (cons left right)))
 
 (defun bili-render--video-card-lines (item width)
-  "Return content lines for video catalog ITEM constrained to WIDTH."
+  "Return content line parts for video catalog ITEM constrained to WIDTH."
   (list
-   (bili-render--catalog-content-line
+   (bili-render--catalog-content-parts
     (propertize (bili-catalog-item-title item) 'face 'bili-title-face)
     (propertize
      (bili-render-duration (bili-catalog-item-duration item))
      'face 'bili-meta-face)
     width)
-   (bili-render--catalog-content-line
+   (bili-render--catalog-content-parts
     (propertize (format "UP  %s" (bili-catalog-item-subtitle item))
                 'face 'bili-meta-face)
     (propertize
      (bili-render--published-date (bili-catalog-item-published-at item))
      'face 'bili-meta-face)
     width)
-   (bili-render--catalog-content-line
+   (bili-render--catalog-content-parts
     (propertize
      (format "%s views · %s danmaku"
              (bili-render-count (bili-catalog-item-metric item))
@@ -133,44 +131,57 @@
      'face 'bili-meta-face)
     (propertize (bili-catalog-item-id item) 'face 'bili-meta-face)
     width)
-   (bili-render--catalog-content-line
+   (bili-render--catalog-content-parts
     (unless (string-empty-p (bili-catalog-item-reason item))
       (propertize (bili-catalog-item-reason item) 'face 'bili-meta-face))
     nil
     width)))
 
 (defun bili-render--live-card-lines (item width)
-  "Return content lines for live catalog ITEM constrained to WIDTH."
+  "Return content line parts for live catalog ITEM constrained to WIDTH."
   (let ((status
          (bili-render--live-status (bili-catalog-item-live-status item))))
     (list
-     (bili-render--catalog-content-line
+     (bili-render--catalog-content-parts
       (propertize (bili-catalog-item-title item) 'face 'bili-title-face)
       (propertize (car status) 'face (cdr status))
       width)
-     (bili-render--catalog-content-line
+     (bili-render--catalog-content-parts
       (propertize
        (format "Streamer  %s" (bili-catalog-item-subtitle item))
        'face 'bili-meta-face)
       (propertize (format "room %s" (bili-catalog-item-id item))
                   'face 'bili-meta-face)
       width)
-     (bili-render--catalog-content-line
-      (propertize
-       (if (string-empty-p (bili-catalog-item-area item))
-           "Area unavailable"
-         (bili-catalog-item-area item))
-       'face 'bili-meta-face)
+     (bili-render--catalog-content-parts
+      (unless (string-empty-p (bili-catalog-item-area item))
+        (propertize (bili-catalog-item-area item) 'face 'bili-meta-face))
       (propertize
        (format "%s online"
                (bili-render-count (bili-catalog-item-metric item)))
        'face 'bili-meta-face)
       width)
-     (bili-render--catalog-content-line
+     (bili-render--catalog-content-parts
       (unless (string-empty-p (bili-catalog-item-reason item))
         (propertize (bili-catalog-item-reason item) 'face 'bili-meta-face))
       nil
       width))))
+
+(defun bili-render--insert-catalog-content-line (parts prefix target-width)
+  "Insert PARTS on one line using display-only PREFIX.
+
+TARGET-WIDTH is the card's right edge.  Neither cover placement nor right
+alignment inserts literal padding into the buffer."
+  (let ((start (point))
+        (left (car parts))
+        (right (cdr parts)))
+    (insert left)
+    (unless (string-empty-p right)
+      (appkit-view-move-to-column
+       (- target-width (string-width right)))
+      (insert right))
+    (insert (propertize "\n" 'line-height t))
+    (appkit-ui-apply-line-prefix start (point) prefix)))
 
 (defun bili-render-insert-catalog-card (view key)
   "Insert canonical catalog KEY from VIEW as a sliced-cover card."
@@ -178,26 +189,32 @@
          (item (bili-core-catalog-item app key)))
     (unless (bili-catalog-item-p item)
       (error "Bilibili catalog row lost its canonical item"))
-    (let* ((cover-rows
-            (bili-cover-catalog-slice-rows
+    (let* ((cover-layout
+            (bili-cover-catalog-slices
              view key (bili-catalog-item-cover item)))
-           (cover-columns (string-width (car cover-rows)))
+           (cover-columns (car cover-layout))
+           (cover-rows (cdr cover-layout))
+           (prefix-width (+ cover-columns 2))
            (width (bili-render--catalog-width))
-           (content-width (max 16 (- width cover-columns 2)))
+           (content-width (max 1 (- width prefix-width)))
            (content-lines
             (if (eq (bili-catalog-item-kind item) 'live)
                 (bili-render--live-card-lines item content-width)
               (bili-render--video-card-lines item content-width)))
+           (gap
+            (propertize
+             " " 'display '(space :width (2 . width))
+             'rear-nonsticky '(display)))
            (start (point)))
       (cl-loop for cover in cover-rows
                for content in content-lines
-               do (insert cover "  " content
-                          (propertize "\n" 'line-height t)))
+               do (bili-render--insert-catalog-content-line
+                   content (concat cover gap) width))
       ;; The stable entity property supports keyboard activation and semantic
       ;; position restoration.  Catalog cards intentionally have no mouse
       ;; action or hover presentation.
       (add-text-properties
-       start (1- (point))
+       start (point)
        (list 'bili-item-key key
              'rear-nonsticky '(bili-item-key)))
       t)))

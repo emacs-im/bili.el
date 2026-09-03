@@ -120,6 +120,45 @@
     (should (= (bili-live-room-live-status room) -1))
     (should (= (bili-catalog-item-live-status item) -1))))
 
+(ert-deftest bili-model-normalizes-personalized-mixed-feed-items ()
+  (let ((video
+         (bili-model-recommended-catalog-item
+          '((goto . "av")
+            (bvid . "BV1feed")
+            (title . "Recommended video")
+            (owner . ((name . "Uploader")))
+            (stat . ((view . 12) (danmaku . 3)))
+            (duration . 61))))
+        (live
+         (bili-model-recommended-catalog-item
+          '((goto . "live")
+            (id . 99)
+            (title . "Recommended live")
+            (pic . "http://i0.hdslb.com/live.jpg")
+            (owner . ((name . "Streamer")))
+            (rcmd_reason . ((content . "Because you watched Emacs")))
+            (room_info
+             . ((room_id . 99)
+                (live_status . 1)
+                (show . ((popularity_count . 321)))
+                (area . ((parent_area_name . "Knowledge")
+                         (area_name . "Technology")))
+                (watched_show . ((num . 123)))))))))
+    (should (eq (bili-catalog-item-kind video) 'video))
+    (should (equal (bili-catalog-item-id video) "BV1feed"))
+    (should (eq (bili-catalog-item-kind live) 'live))
+    (should (= (bili-catalog-item-id live) 99))
+    (should (equal (bili-catalog-item-subtitle live) "Streamer"))
+    (should (equal (bili-catalog-item-area live)
+                   "Knowledge / Technology"))
+    (should (= (bili-catalog-item-metric live) 123))
+    (should (= (bili-catalog-item-live-status live) 1))
+    (should (equal (bili-catalog-item-reason live)
+                   "Because you watched Emacs"))
+    (should-not
+     (bili-model-recommended-catalog-item
+      '((goto . "ad") (title . "Advertisement"))))))
+
 (provide 'bili-model-test)
 
 ;;; bili-model-test.el ends here
