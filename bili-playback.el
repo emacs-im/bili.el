@@ -168,9 +168,9 @@ buffer.  ERRBACK receives a readable failure string."
          (cid (if selected (bili-video-page-cid selected)
                 (bili-video-cid video)))
          (transport-owner (or request-owner (bili-core-app)))
-         (session-owner (if (appkit-view-p transport-owner)
-                            (appkit-view-app transport-owner)
-                          transport-owner))
+         (session-owner
+          (or (appkit-owner-app transport-owner)
+              (error "Bilibili playback has no Appkit application")))
          (failure (or errback (lambda (message) (message "%s" message)))))
     (bili-api-video-playurl
      (bili-video-bvid video) cid
@@ -194,9 +194,9 @@ failure string."
   (unless (bili-live-room-p room)
     (error "Invalid Bilibili live room"))
   (let* ((transport-owner (or request-owner (bili-core-app)))
-         (session-owner (if (appkit-view-p transport-owner)
-                            (appkit-view-app transport-owner)
-                          transport-owner))
+         (session-owner
+          (or (appkit-owner-app transport-owner)
+              (error "Bilibili playback has no Appkit application")))
          (failure (or errback (lambda (message) (message "%s" message)))))
     (bili-api-live-play-info
      (bili-live-room-id room)

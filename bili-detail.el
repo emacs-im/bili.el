@@ -443,10 +443,6 @@
        :position position)
       (force-mode-line-update))))
 
-(defun bili-detail--operation-current-p (view state operation)
-  "Return non-nil when OPERATION may still update detail STATE in VIEW."
-  (and (eq state (appkit-view-state view))
-       (appkit-view-operation-current-p operation)))
 
 (defun bili-detail--request-failed (view state message)
   "Install metadata failure MESSAGE in VIEW and STATE."
@@ -493,48 +489,32 @@
     (error "Invalid Bilibili detail phase: %S" phase))
   (let* ((state (bili-detail--state view))
          (operation
-          (appkit-view-operation-begin
-           view bili-detail--request-key
-           :cancel-function
-           (if (eq (plist-get state :kind) 'live)
-               #'bili-live-cancel
-             #'bili-api-cancel)))
-         request)
+          (appkit-view-operation-begin view bili-detail--request-key)))
     (setf (plist-get state :phase) phase
           (plist-get state :message) nil)
     (appkit-request-sync view :structure t :part 'details :position t)
     (cl-labels
         ((success
           (model)
-          (when (bili-detail--operation-current-p view state operation)
-            (appkit-view-operation-finish operation)
+          (when (appkit-view-operation-finish operation)
             (bili-detail--request-succeeded view state model phase)))
          (failure
           (message)
-          (when (bili-detail--operation-current-p view state operation)
-            (appkit-view-operation-finish operation)
+          (when (appkit-view-operation-finish operation)
             (bili-detail--request-failed view state message))))
-      (setq request
-            (pcase (plist-get state :kind)
-              ('video
-               (bili-api-video
-                (plist-get state :id)
-                (lambda (data)
-                  (condition-case error-data
-                      (success (bili-model-video-from-json data))
-                    (error (failure (error-message-string error-data)))))
-                :errback #'failure :owner view))
-              ('live
-               (bili-live-resolve-room
-                (plist-get state :id) #'success
-                :errback #'failure :owner view))))
-      (appkit-view-operation-bind operation request)
-      (when (and (null request)
-                 (bili-detail--operation-current-p view state operation))
-        (appkit-view-operation-finish operation)
-        (bili-detail--request-failed
-         view state "Bilibili detail request did not start"))
-      request)))
+      (pcase (plist-get state :kind)
+        ('video
+         (bili-api-video
+          (plist-get state :id)
+          (lambda (data)
+            (condition-case error-data
+                (success (bili-model-video-from-json data))
+              (error (failure (error-message-string error-data)))))
+          :errback #'failure :owner operation))
+        ('live
+         (bili-live-resolve-room
+          (plist-get state :id) #'success
+          :errback #'failure :owner operation))))))
 
 (defun bili-detail--setup (view)
   "Initialize projection for detail VIEW."
@@ -613,7 +593,7 @@
   "Start playback from VIEW, optionally selecting video PAGE."
   (let* ((state (bili-detail--state view))
          (model (bili-detail--model view state))
-         operation request)
+         operation)
     (unless model
       (user-error "Bilibili detail has not loaded"))
     (when (and (bili-live-room-p model)
@@ -623,38 +603,30 @@
       (setf (plist-get state :selected-cid) (bili-video-page-cid page)))
     (setq operation
           (appkit-view-operation-begin
-           view bili-detail--playback-request-key
-           :cancel-function #'bili-api-cancel))
+           view bili-detail--playback-request-key))
     (setf (plist-get state :playback-phase) 'resolving
           (plist-get state :playback-message) nil)
     (appkit-request-sync view :part 'details :entry '(action play) :position t)
     (cl-labels
         ((success
           (_buffer)
-          (when (bili-detail--operation-current-p view state operation)
-            (appkit-view-operation-finish operation)
+          (when (appkit-view-operation-finish operation)
             (setf (plist-get state :playback-phase) 'idle
                   (plist-get state :playback-message) nil)
             (appkit-request-sync view :part 'details :position t)))
          (failure
           (message)
-          (when (bili-detail--operation-current-p view state operation)
-            (appkit-view-operation-finish operation)
+          (when (appkit-view-operation-finish operation)
             (setf (plist-get state :playback-phase) 'error
                   (plist-get state :playback-message) message)
             (appkit-request-sync view :part 'details :position t))))
-      (setq request
-            (if (bili-video-p model)
-                (bili-playback-video
-                 model view :page (or page (bili-detail--selected-page model state))
-                 :callback #'success :errback #'failure)
-              (bili-playback-live
-               model view :callback #'success :errback #'failure)))
-      (appkit-view-operation-bind operation request)
-      (when (and (null request)
-                 (bili-detail--operation-current-p view state operation))
-        (failure "Bilibili playback request did not start"))
-      request)))
+      (if (bili-video-p model)
+          (bili-playback-video
+           model operation
+           :page (or page (bili-detail--selected-page model state))
+           :callback #'success :errback #'failure)
+        (bili-playback-live
+         model operation :callback #'success :errback #'failure)))))
 
 (defun bili-detail-open-comments ()
   "Open the read-only comment stream for the current video detail."

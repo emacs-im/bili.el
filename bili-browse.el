@@ -328,10 +328,6 @@ Set this to nil to disable automatic pagination."
   (interactive "p")
   (bili-browse--move-item (- (or count 1))))
 
-(defun bili-browse--catalog-operation-current-p (view state operation)
-  "Return non-nil when OPERATION may still update catalog STATE in VIEW."
-  (and (eq state (appkit-view-state view))
-       (appkit-view-operation-current-p operation)))
 
 (defun bili-browse--catalog-failed
     (view state phase message &optional quiet)
@@ -411,23 +407,23 @@ QUIET suppresses echo-area reporting if response adaptation fails."
       view state phase (error-message-string error-data) quiet))))
 
 (defun bili-browse--dispatch-catalog
-    (view state page success failure)
-  "Dispatch STATE's PAGE for VIEW using SUCCESS and FAILURE callbacks."
+    (owner state page success failure)
+  "Dispatch STATE's PAGE under OWNER using SUCCESS and FAILURE callbacks."
   (pcase (plist-get state :kind)
     ('home
      (bili-api-popular
       page success :page-size bili-browse-page-size
-      :errback failure :owner view))
+      :errback failure :owner owner))
     ('recommended
      (bili-api-recommended-feed
       page success :page-size bili-browse-recommended-page-size
-      :errback failure :owner view))
+      :errback failure :owner owner))
     ('search
      (bili-api-search-videos
       (plist-get state :query) page success
-      :page-size bili-browse-page-size :errback failure :owner view))
+      :page-size bili-browse-page-size :errback failure :owner owner))
     ('live
-     (bili-api-live-list page success :errback failure :owner view))
+     (bili-api-live-list page success :errback failure :owner owner))
     (_ (error "Unsupported Bilibili catalog kind"))))
 
 (defun bili-browse--catalog-request (view phase &optional quiet)
@@ -444,36 +440,21 @@ QUIET suppresses echo-area messages for automatic pagination."
                    1))
            (operation
             (appkit-view-operation-begin
-             view bili-browse--catalog-request-key
-             :cancel-function #'bili-api-cancel))
-           request)
+             view bili-browse--catalog-request-key)))
       (setf (plist-get state :phase) phase
             (plist-get state :failed-phase) nil
             (plist-get state :message) nil)
       (appkit-request-sync view :structure t :part 'catalog :position t)
-      (setq request
-            (bili-browse--dispatch-catalog
-             view state page
-             (lambda (data)
-               (when (bili-browse--catalog-operation-current-p
-                      view state operation)
-                 (appkit-view-operation-finish operation)
-                 (bili-browse--catalog-succeeded
-                  view state phase page data quiet)))
-             (lambda (message)
-               (when (bili-browse--catalog-operation-current-p
-                      view state operation)
-                 (appkit-view-operation-finish operation)
-                 (bili-browse--catalog-failed
-                  view state phase message quiet)))))
-      (appkit-view-operation-bind operation request)
-      (when (and (null request)
-                 (bili-browse--catalog-operation-current-p
-                  view state operation))
-        (appkit-view-operation-finish operation)
-        (bili-browse--catalog-failed
-         view state phase "Bilibili catalog request did not start" quiet))
-      request)))
+      (bili-browse--dispatch-catalog
+       operation state page
+       (lambda (data)
+         (when (appkit-view-operation-finish operation)
+           (bili-browse--catalog-succeeded
+            view state phase page data quiet)))
+       (lambda (message)
+         (when (appkit-view-operation-finish operation)
+           (bili-browse--catalog-failed
+            view state phase message quiet)))))))
 
 (defun bili-browse--maybe-auto-load
     (view _window position end)

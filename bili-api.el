@@ -375,9 +375,8 @@ MIXIN-KEY signs the request."
 
 ERRBACK and OWNER have the same meanings as in `bili-api-get'."
   (let* ((request-owner (or owner (bili-core-app)))
-         (app (if (appkit-view-p request-owner)
-                  (appkit-view-app request-owner)
-                request-owner)))
+         (app (or (appkit-owner-app request-owner)
+                  (error "Bilibili request has no Appkit application"))))
     (bili-api--start
      callback errback request-owner
      (lambda (request)

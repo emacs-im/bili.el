@@ -318,10 +318,6 @@ When INITIAL-P is non-nil, prepend provider-pinned comments."
         (puthash id t seen)
         (push model models)))))
 
-(defun bili-comment--operation-current-p (view state operation)
-  "Return non-nil when OPERATION may still update comment STATE in VIEW."
-  (and (eq state (appkit-view-state view))
-       (appkit-view-operation-current-p operation)))
 
 (defun bili-comment--failed (view state phase message &optional quiet)
   "Install request failure MESSAGE for PHASE in VIEW and STATE."
@@ -385,37 +381,22 @@ QUIET suppresses echo-area messages for automatic pagination."
       (user-error "No more Bilibili comments"))
     (let* ((offset (and (eq phase 'older) (plist-get state :cursor)))
            (operation
-            (appkit-view-operation-begin
-             view bili-comment--request-key
-             :cancel-function #'bili-api-cancel))
-           request)
+            (appkit-view-operation-begin view bili-comment--request-key)))
       (setf (plist-get state :phase) phase
             (plist-get state :failed-phase) nil
             (plist-get state :message) nil)
       (appkit-request-sync view :structure t :part 'comments :position t)
-      (setq request
-            (bili-api-video-comments
-             (plist-get state :aid)
-             (lambda (data)
-               (when (bili-comment--operation-current-p
-                      view state operation)
-                 (appkit-view-operation-finish operation)
-                 (bili-comment--succeeded view state phase data)))
-             :offset offset
-             :errback
-             (lambda (message)
-               (when (bili-comment--operation-current-p
-                      view state operation)
-                 (appkit-view-operation-finish operation)
-                 (bili-comment--failed view state phase message quiet)))
-             :owner view))
-      (appkit-view-operation-bind operation request)
-      (when (and (null request)
-                 (bili-comment--operation-current-p view state operation))
-        (appkit-view-operation-finish operation)
-        (bili-comment--failed
-         view state phase "Bilibili comment request did not start" quiet))
-      request)))
+      (bili-api-video-comments
+       (plist-get state :aid)
+       (lambda (data)
+         (when (appkit-view-operation-finish operation)
+           (bili-comment--succeeded view state phase data)))
+       :offset offset
+       :errback
+       (lambda (message)
+         (when (appkit-view-operation-finish operation)
+           (bili-comment--failed view state phase message quiet)))
+       :owner operation))))
 
 (defun bili-comment--maybe-auto-load (view _window position end)
   "Load VIEW's next comment page when POSITION approaches END."
