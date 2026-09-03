@@ -139,6 +139,28 @@
       (should-error
        (bili-api-recommended-feed 1 #'ignore :page-size 31)))))
 
+(ert-deftest bili-api-video-comments-wraps-opaque-cursor-for-wbi ()
+  (let (params)
+    (cl-letf (((symbol-function 'bili-api-wbi-get)
+               (lambda (_root _path request-params _callback &rest _options)
+                 (setq params request-params)
+                 'comment-request)))
+      (should
+       (eq (bili-api-video-comments 42 #'ignore :offset "CAEiAggC")
+           'comment-request))
+      (should (= (alist-get 'type params) 1))
+      (should (= (alist-get 'oid params) 42))
+      (should (= (alist-get 'mode params) 3))
+      (should (= (alist-get 'web_location params) 1315875))
+      (should
+       (equal (json-parse-string
+               (alist-get 'pagination_str params)
+               :object-type 'alist)
+              '((offset . "CAEiAggC"))))
+      (should-error (bili-api-video-comments 0 #'ignore))
+      (should-error
+       (bili-api-video-comments 42 #'ignore :offset "")))))
+
 (provide 'bili-api-test)
 
 ;;; bili-api-test.el ends here

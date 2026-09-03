@@ -129,6 +129,26 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest bili-detail-opens-comments-for-canonical-video ()
+  (let* ((video (bili-model-video-from-json
+                 (bili-detail-test--video-json)))
+         (view (bili-detail--open 'video (bili-video-bvid video) video))
+         (buffer (appkit-view-buffer view))
+         opened)
+    (unwind-protect
+        (cl-letf (((symbol-function 'bili-comment-open)
+                   (lambda (model)
+                     (setq opened model)
+                     'comment-view)))
+          (appkit-sync-invalidations view)
+          (with-current-buffer buffer
+            (should (string-match-p "View comments" (buffer-string)))
+            (should (eq (bili-detail-open-comments) 'comment-view)))
+          (should (eq opened video)))
+      (bili-core-stop)
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (provide 'bili-detail-test)
 
 ;;; bili-detail-test.el ends here

@@ -159,6 +159,42 @@
      (bili-model-recommended-catalog-item
       '((goto . "ad") (title . "Advertisement"))))))
 
+(ert-deftest bili-model-normalizes-comments-and-one-level-replies ()
+  (let* ((reply
+          '((rpid_str . "12")
+            (mid . 102)
+            (ctime . 1700000001)
+            (like . 2)
+            (member . ((mid . "102") (uname . "Bob\nExample")))
+            (content . ((message . "Nested\nreply")))))
+         (comment
+          (bili-model-comment-from-json
+           `((rpid . 11)
+             (mid . 101)
+             (ctime . 1700000000)
+             (like . "7")
+             (rcount . 5)
+             (member . ((mid . "101") (uname . "Alice\nExample")
+                        (avatar . "http://i0.hdslb.com/avatar.jpg")))
+             (content . ((message . "Root<br>comment")))
+             (replies . (,reply)))))
+         (nested (car (bili-comment-replies comment))))
+    (should (= (bili-comment-id comment) 11))
+    (should (equal (bili-comment-author comment) "Alice Example"))
+    (should (= (bili-comment-author-id comment) 101))
+    (should (equal (bili-comment-message comment) "Root\ncomment"))
+    (should (equal (bili-comment-avatar comment)
+                   "https://i0.hdslb.com/avatar.jpg"))
+    (should (= (bili-comment-likes comment) 7))
+    (should (= (bili-comment-reply-count comment) 5))
+    (should (= (bili-comment-id nested) 12))
+    (should (equal (bili-comment-author nested) "Bob Example"))
+    (should (equal (bili-comment-message nested) "Nested\nreply"))
+    (should-not (bili-comment-replies nested)))
+  (should-not
+   (bili-model-comment-from-json
+    '((rpid . 0) (content . ((message . "missing id")))))))
+
 (provide 'bili-model-test)
 
 ;;; bili-model-test.el ends here

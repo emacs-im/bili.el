@@ -22,6 +22,7 @@
 (require 'appkit-core)
 (require 'appkit-media-image)
 (require 'appkit-media-resource)
+(require 'appkit-view)
 (require 'bili-api)
 (require 'bili-core)
 
@@ -286,6 +287,29 @@ padding, and loading an image cannot shift the right-hand card content."
          row)
         (push row rows)))
     (cons columns (nreverse rows))))
+
+(defun bili-cover-avatar-image (view entity-key url pixel-size)
+  "Return VIEW's cached circular avatar for ENTITY-KEY and URL.
+
+PIXEL-SIZE is evaluated on VIEW's actual display frame.  This function
+performs no network I/O; `bili-cover-prefetch' owns acquisition."
+  (let* ((app (appkit-view-app view))
+         (frame (bili-cover--display-frame view)))
+    (when-let* ((url (bili-cover-normalize-url url))
+                (file (bili-cover--file app entity-key url))
+                (attributes (file-attributes file 'string)))
+      (let* ((identity
+              (list 'avatar file (file-attribute-size attributes)
+                    (file-attribute-modification-time attributes)
+                    pixel-size))
+             (cached (gethash identity bili-cover--image-cache)))
+        (or cached
+            (with-selected-frame frame
+              (when-let* ((image
+                           (appkit-media-circular-image-from-file
+                            file pixel-size)))
+                (puthash identity image bili-cover--image-cache)
+                image)))))))
 
 (defun bili-cover-detail-image (view entity-key url)
   "Return a responsive 16:9 cover image for VIEW, ENTITY-KEY, and URL."

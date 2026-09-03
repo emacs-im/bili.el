@@ -86,7 +86,7 @@
    (bili-cover-normalize-url "https://user@i0.hdslb.com/a.jpg"))
   (should-not
    (bili-cover-normalize-url "https://i0.hdslb.com:444/a.jpg")))
-(ert-deftest bili-cover-catalog-produces-four-display-only-slices ()
+(ert-deftest bili-cover-catalog-produces-configured-display-only-slices ()
   (let* ((app (bili-core-app))
          (view
           (appkit-open-view
@@ -94,8 +94,7 @@
            :buffer-name " *bili-cover-test*" :state nil
            :sync-function #'ignore :parts nil :select nil))
          (buffer (appkit-view-buffer view))
-         (descriptor '(image :type png :width 128 :height 72))
-         (bili-cover-catalog-lines 4))
+         (descriptor '(image :type png :width 128 :height 72)))
     (unwind-protect
         (cl-letf (((symbol-function 'bili-cover--display-frame)
                    (lambda (&optional _view) (selected-frame)))
@@ -108,22 +107,25 @@
                               (propertize
                                " " 'display (list 'slice index))))))
           (with-current-buffer buffer
-            (pcase-let
-                ((`(,columns . ,rows)
-                  (bili-cover-catalog-slices
-                   view '(video "BV1") "https://i0.hdslb.com/a.jpg")))
-              (should (>= columns 8))
-              (should (= (length rows) 4))
-              (cl-loop for row in rows
-                       for index from 0
-                       do (should (= (length row) 1))
-                       do (should-not (string-match-p "\n" row))
-                       do (should
-                           (equal (get-text-property 0 'display row)
-                                  (list 'slice index)))))))
+            (dolist (line-count '(3 4))
+              (let ((bili-cover-catalog-lines line-count))
+                (pcase-let
+                    ((`(,columns . ,rows)
+                      (bili-cover-catalog-slices
+                       view '(video "BV1")
+                       "https://i0.hdslb.com/a.jpg")))
+                  (should (>= columns 8))
+                  (should (= (length rows) line-count))
+                  (cl-loop for row in rows
+                           for index from 0
+                           do (should (= (length row) 1))
+                           do (should-not (string-match-p "\n" row))
+                           do (should
+                               (equal (get-text-property 0 'display row)
+                                      (list 'slice index))))))))
       (bili-core-stop)
       (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
+        (kill-buffer buffer))))))
 
 (provide 'bili-cover-test)
 

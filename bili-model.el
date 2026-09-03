@@ -33,7 +33,7 @@
 
 (cl-defstruct (bili-comment (:constructor bili-comment-create))
   "One normalized Bilibili root comment or reply preview."
-  id author author-id message created-at likes reply-count replies)
+  id author author-id avatar message created-at likes reply-count replies)
 
 (defun bili-model--text (value)
   "Return VALUE as text, defaulting null-like values to empty text."
@@ -306,6 +306,7 @@ for malformed entries."
         (bili-comment-create
          :id id
          :author (bili-model--one-line (alist-get 'uname member))
+         :avatar (bili-model--cover-url (alist-get 'avatar member))
          :author-id (bili-model--number
                      (or (alist-get 'mid member) (alist-get 'mid data)))
          :message (bili-model--body-text (alist-get 'message content))

@@ -22,6 +22,7 @@
 (require 'appkit-ui)
 (require 'bili-api)
 (require 'bili-cover)
+(require 'bili-comment)
 (require 'bili-core)
 (require 'bili-live)
 (require 'bili-model)
@@ -43,6 +44,7 @@
   "RET" #'bili-detail-activate
   "g" #'bili-detail-refresh
   "P" #'bili-detail-play
+  "c" #'bili-detail-open-comments
   "s" #'bili-detail-select-page
   "o" #'bili-detail-open-in-browser
   "n" #'bili-detail-next-action
@@ -211,7 +213,11 @@
            (bili-detail--row
             '(action play) 'action play-label
             :enabled-p (not (eq playback-phase 'resolving))
-            :action #'bili-detail-play :dependencies (list resource)))))
+            :action #'bili-detail-play :dependencies (list resource))
+           (bili-detail--row
+            '(action comments) 'action "View comments"
+            :enabled-p t :action #'bili-detail-open-comments
+            :dependencies (list resource)))))
     (when (eq playback-phase 'error)
       (setq rows
             (append rows
@@ -220,17 +226,16 @@
                            (format "Playback failed: %s"
                                    (or (plist-get state :playback-message)
                                        "Unknown error")))))))
-    (setq rows
-          (append
-           rows
-           (list
-            (bili-detail--row '(description-heading) 'heading "Description")
-            (bili-detail--row
-             '(description) 'body
-             (if (string-empty-p (bili-video-description video))
-                 "The uploader did not provide a description."
-               (bili-video-description video))
-             :dependencies (list resource)))))
+    (unless (string-empty-p (bili-video-description video))
+      (setq rows
+            (append
+             rows
+             (list
+              (bili-detail--row
+               '(description-heading) 'heading "Description")
+              (bili-detail--row
+               '(description) 'body (bili-video-description video)
+               :dependencies (list resource))))))
     (when (> (length pages) 1)
       (setq rows
             (append
@@ -406,21 +411,24 @@
       ('body
        (insert (propertize text 'face (or face 'default)) "\n"))
       ('action
-       (insert "  ")
-       (if (plist-get entry :enabled-p)
-           (appkit-ui-insert-action-button
-            (format " %s " text) (plist-get entry :action)
-            :face 'bili-action-face :help-echo text)
-         (insert (propertize (format " %s " text) 'face 'bili-disabled-face)))
-       (insert "\n"))
+       (let ((row-start (point)))
+         (if (plist-get entry :enabled-p)
+             (appkit-ui-insert-action-button
+              (format " %s " text) (plist-get entry :action)
+              :face 'bili-action-face :help-echo text)
+           (insert
+            (propertize (format " %s " text) 'face 'bili-disabled-face)))
+         (insert "\n")
+         (appkit-ui-apply-line-prefix row-start (point) "  ")))
       ('page
        (let ((row-start (point)))
-         (insert "  " text)
+         (insert text)
          (let ((row-end (point)))
            (appkit-ui-make-action-row
             row-start row-end (plist-get entry :object)
             (plist-get entry :action) :help-echo "Play this part"))
-         (insert "\n")))
+         (insert "\n")
+         (appkit-ui-apply-line-prefix row-start (point) "  ")))
       (_ (error "Unknown Bilibili detail row type: %S" type)))
     (add-text-properties
      start (point)
@@ -689,6 +697,17 @@
              (bili-detail--playback-current-p view state token))
         (failure "Bilibili playback request did not start")))
       request)))
+
+(defun bili-detail-open-comments ()
+  "Open the read-only comment stream for the current video detail."
+  (interactive)
+  (let* ((view (or (bili-detail--current-view)
+                   (user-error "Current buffer is not a Bilibili detail view")))
+         (state (bili-detail--state view))
+         (video (bili-detail--model view state)))
+    (unless (bili-video-p video)
+      (user-error "Current detail is not a video"))
+    (bili-comment-open video)))
 
 (defun bili-detail-play ()
   "Play the current Bilibili detail or selected video part."

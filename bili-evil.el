@@ -12,6 +12,7 @@
 
 (require 'appkit-evil)
 (require 'bili-browse)
+(require 'bili-comment)
 (require 'bili-detail)
 
 (defcustom bili-evil-initial-state 'normal
@@ -26,7 +27,7 @@ When nil, leave Evil's initial-state selection untouched."
   :group 'bili)
 
 (defconst bili-evil--application-modes
-  '(bili-browse-mode bili-detail-mode)
+  '(bili-browse-mode bili-comment-mode bili-detail-mode)
   "Read-only bili.el modes participating in Evil integration.")
 
 (defun bili-evil-setup ()
@@ -36,6 +37,7 @@ Safe to call repeatedly and before or after Evil loads."
     (appkit-evil-set-initial-states
      bili-evil--application-modes bili-evil-initial-state)
     (appkit-evil-define-readonly-keys 'bili-browse-mode-map)
+    (appkit-evil-define-readonly-keys 'bili-comment-mode-map)
     (appkit-evil-define-readonly-keys 'bili-detail-mode-map)
     (appkit-evil-map
       (:map bili-browse-mode-map
@@ -58,12 +60,19 @@ Safe to call repeatedly and before or after Evil loads."
        "g r" #'bili-detail-refresh
        "g p" #'bili-detail-play
        "g s" #'bili-detail-select-page
+       "g c" #'bili-detail-open-comments
        "g o" #'bili-detail-open-in-browser
        "g j" #'bili-detail-next-action
-       "g k" #'bili-detail-previous-action))
+       "g k" #'bili-detail-previous-action)
+      (:map bili-comment-mode-map
+       :nm
+       "g r" #'bili-comment-refresh
+       "g j" #'appkit-discussion-next-entry
+       "g k" #'appkit-discussion-previous-entry))
     (appkit-evil-normalize-buffers bili-evil--application-modes)))
 
 (add-hook 'bili-browse-mode-hook #'appkit-evil-normalize-keymaps)
+(add-hook 'bili-comment-mode-hook #'appkit-evil-normalize-keymaps)
 (add-hook 'bili-detail-mode-hook #'appkit-evil-normalize-keymaps)
 
 (bili-evil-setup)

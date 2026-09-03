@@ -26,7 +26,7 @@
 
 ;;;###autoload
 (defun bili ()
-  "Open the Bilibili home view."
+  "Open Bilibili's comprehensive popular-video catalog."
   (interactive)
   (bili-browse-home))
 
