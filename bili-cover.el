@@ -22,7 +22,7 @@
 (require 'appkit-core)
 (require 'appkit-media-image)
 (require 'appkit-media-resource)
-(require 'appkit-view)
+(require 'appkit-presentation)
 (require 'bili-api)
 (require 'bili-core)
 
@@ -104,7 +104,7 @@
   (or (when (and (appkit-view-p view) (appkit-view-live-p view))
         (when-let* ((buffer (appkit-view-buffer view))
                     ((buffer-live-p buffer))
-                    (window (appkit-view-display-window buffer))
+                    (window (appkit-geometry-display-window buffer))
                     ((window-live-p window))
                     (frame (window-frame window))
                     ((bili-cover--image-capable-frame-p frame)))

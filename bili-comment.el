@@ -18,7 +18,7 @@
 (require 'appkit-projection)
 (require 'appkit-scroll)
 (require 'appkit-ui)
-(require 'appkit-view)
+(require 'appkit-presentation)
 (require 'bili-cover)
 (require 'bili-api)
 (require 'bili-core)
@@ -267,9 +267,9 @@ AID identifies the video; ROOT-ID identifies COMMENT's canonical root."
       ('comment
        (bili-comment--insert-comment view entry))
       ('note
-       (appkit-view-insert-note-line text :face 'bili-meta-face))
+       (appkit-presentation-insert-note-line text :face 'bili-meta-face))
       ('error
-       (appkit-view-insert-note-line text :face 'bili-error-face))
+       (appkit-presentation-insert-note-line text :face 'bili-error-face))
       ('action
        (bili-comment--insert-action text (plist-get entry :action)))
       (_ (error "Unknown Bilibili comment row type: %S" type)))))

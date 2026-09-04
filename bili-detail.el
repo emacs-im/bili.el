@@ -378,12 +378,12 @@
          (face (plist-get entry :face))
          (start (point)))
     (pcase type
-      ('title (appkit-view-insert-heading-line text :face 'bili-title-face))
-      ('heading (appkit-view-insert-heading-line text :face 'bili-section-face))
-      ('meta (appkit-view-insert-note-line text :face 'bili-meta-face))
-      ('status (appkit-view-insert-heading-line text :face face))
-      ('note (appkit-view-insert-note-line text :face (or face 'shadow)))
-      ('error (appkit-view-insert-note-line text :face 'bili-error-face))
+      ('title (appkit-presentation-insert-heading-line text :face 'bili-title-face))
+      ('heading (appkit-presentation-insert-heading-line text :face 'bili-section-face))
+      ('meta (appkit-presentation-insert-note-line text :face 'bili-meta-face))
+      ('status (appkit-presentation-insert-heading-line text :face face))
+      ('note (appkit-presentation-insert-note-line text :face (or face 'shadow)))
+      ('error (appkit-presentation-insert-note-line text :face 'bili-error-face))
       ('cover
        (let* ((view (or (bili-detail--current-view)
                         (error "No live Bilibili detail view")))
@@ -395,7 +395,7 @@
                (appkit-media-insert-image-slices
                 image nil nil "[cover]" (plist-get entry :url))
                (insert "\n"))
-           (appkit-view-insert-note-line
+           (appkit-presentation-insert-note-line
             (pcase (plist-get
                     (bili-core-cover-state
                      (appkit-view-app view) (plist-get entry :entity-key))

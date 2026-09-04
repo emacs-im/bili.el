@@ -12,7 +12,7 @@
 (require 'cl-lib)
 (require 'subr-x)
 (require 'appkit-core)
-(require 'appkit-view)
+(require 'appkit-presentation)
 (require 'bili-cover)
 (require 'bili-core)
 (require 'bili-model)
@@ -97,12 +97,12 @@
   (let* ((right (or right ""))
          (right-width (min (string-width right) (max 0 (/ width 3))))
          (right (if (> (string-width right) right-width)
-                    (appkit-view-elide-string-for-columns
+                    (appkit-presentation-elide-string-for-columns
                      right right-width 'default)
                   right))
          (gap (if (string-empty-p right) 0 1))
          (left-width (max 1 (- width (string-width right) gap)))
-         (left (appkit-view-elide-string-for-columns
+         (left (appkit-presentation-elide-string-for-columns
                 (or left "") left-width 'default)))
     (cons left right)))
 
@@ -177,7 +177,7 @@ alignment inserts literal padding into the buffer."
         (right (cdr parts)))
     (insert left)
     (unless (string-empty-p right)
-      (appkit-view-move-to-column
+      (appkit-geometry-insert-alignment-space
        (- target-width (string-width right)))
       (insert right))
     (insert (propertize "\n" 'line-height t))

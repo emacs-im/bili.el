@@ -242,11 +242,11 @@ Set this to nil to disable automatic pagination."
          (text (plist-get entry :text)))
     (pcase type
       ('section
-       (appkit-view-insert-heading-line text :face 'bili-section-face))
+       (appkit-presentation-insert-heading-line text :face 'bili-section-face))
       ('note
-       (appkit-view-insert-note-line text :face 'bili-meta-face))
+       (appkit-presentation-insert-note-line text :face 'bili-meta-face))
       ('error
-       (appkit-view-insert-note-line text :face 'bili-error-face))
+       (appkit-presentation-insert-note-line text :face 'bili-error-face))
       ('action
        (insert "  ")
        (appkit-ui-insert-action-button
