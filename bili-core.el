@@ -56,7 +56,7 @@
   "Return bili.el's live default Appkit application."
   (unless (appkit-app-live-p bili-core--app)
     (setq bili-core--app
-          (appkit-start-app
+          (appkit-app-start
            'bili :id 'default :state (bili-core--make-session)
            :shutdown #'bili-core--shutdown)))
   bili-core--app)
@@ -73,7 +73,7 @@
   "Stop bili.el and cancel every owned view, request, and media session."
   (interactive)
   (when (appkit-app-live-p bili-core--app)
-    (appkit-stop-app bili-core--app))
+    (appkit-app-close bili-core--app))
   nil)
 
 (defun bili-core-observe (&optional app)
