@@ -17,6 +17,7 @@
 (require 'url-parse)
 (require 'appkit-media-image)
 (require 'appkit-media-resource)
+(require 'appkit-media-effect)
 (require 'appkit-resource)
 (require 'appkit-surface)
 (require 'bili-api)
@@ -106,54 +107,36 @@
   "Return non-nil when any live frame can render inline images."
   (seq-some #'bili-cover--image-capable-frame-p (frame-list)))
 
-(defun bili-cover--cache-base (entity-key url)
-  "Return the cache base for ENTITY-KEY and public source URL."
-  (let ((directory
-         (expand-file-name
-          (secure-hash 'sha256 (prin1-to-string entity-key))
-          bili-cover-cache-directory)))
-    (expand-file-name
-     (secure-hash 'sha256 (car (split-string url "[#?]")))
-     directory)))
+(defun bili-cover--cache-base (url)
+  "Return the shared cache base for public image URL."
+  (expand-file-name
+   (secure-hash 'sha256 (car (split-string url "[#?]")))
+   bili-cover-cache-directory))
 
-(defun bili-cover--cached-file (entity-key url)
-  "Return a cached cover file for ENTITY-KEY and URL, or nil."
-  (appkit-media-image-cache-existing-file
-   (bili-cover--cache-base entity-key url)))
-
-(defun bili-cover--load (_context input success failure)
-  "Acquire cover INPUT, resolving SUCCESS or FAILURE."
-  (pcase-let* ((`(,entity-key ,url) input)
-               (cached (bili-cover--cached-file entity-key url)))
-    (if cached
-        (progn (funcall success cached) nil)
-      (let ((transfer
-             (appkit-media-cache-image-resource-async
-              `((url . ,url)
-                (name . ,(or (appkit-media-url-filename url) "cover.img")))
-              (bili-cover--cache-base entity-key url)
-              success failure
-              :headers
-              `(("Accept" . "image/avif,image/webp,image/*;q=0.8,*/*;q=0.1")
-                ("Referer" . "https://www.bilibili.com/")
-                ("User-Agent" . ,bili-api-user-agent)))))
-        (when (appkit-media-transfer-p transfer)
-          (appkit-cancellation-create
-           :kind 'transport
-           :cancel (lambda ()
-                     (appkit-media-cancel-transfer transfer))))))))
+(defun bili-cover--request-headers ()
+  "Return public request headers for Bilibili image bytes."
+  `(("Accept" . "image/avif,image/webp,image/*;q=0.8,*/*;q=0.1")
+    ("Referer" . "https://www.bilibili.com/")
+    ("User-Agent" . ,bili-api-user-agent)))
 
 (defun bili-cover-demand (entity-key value)
   "Return declarative cover demand for ENTITY-KEY and URL VALUE, or nil."
   (when-let* ((url (bili-cover-normalize-url value))
               ((bili-cover--image-display-available-p)))
-    (appkit-resource-demand-create
-     :key (bili-cover-resource-key entity-key url)
-     :input (list entity-key url)
-     :loader #'bili-cover--load
-     :acquisition-identity (list 'bili-cover url)
-     :sharing-policy 'shared
-     :cache-policy 'while-interested)))
+    (let ((headers (bili-cover--request-headers)))
+      (appkit-resource-demand-create
+       :key (bili-cover-resource-key entity-key url)
+       :input
+       (appkit-media-image-acquisition-create
+        (appkit-media-resource-create
+         :url url
+         :name (or (appkit-media-url-filename url) "cover.img"))
+        (bili-cover--cache-base url)
+        :headers headers)
+       :loader #'appkit-media-image-resource-load
+       :acquisition-identity (list 'bili-cover url headers)
+       :sharing-policy 'shared
+       :cache-policy 'while-interested))))
 
 (defun bili-cover--file (surface entity-key url)
   "Return SURFACE's ready cover file for ENTITY-KEY and URL, or nil."

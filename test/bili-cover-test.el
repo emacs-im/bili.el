@@ -9,8 +9,8 @@
     (cl-letf
         (((symbol-function 'bili-cover--image-display-available-p)
           (lambda () t))
-         ((symbol-function 'bili-cover--cached-file)
-          (lambda (&rest _arguments) nil))
+         ((symbol-function 'appkit-media-image-cache-existing-file)
+          (lambda (_cache-base) nil))
          ((symbol-function 'appkit-media-cache-image-resource-async)
           (lambda (resource cache-base _success _failure &rest options)
             (setq captured (list resource cache-base options))
@@ -19,10 +19,9 @@
           (lambda (object) (eq object 'cover-transfer)))
          ((symbol-function 'appkit-media-cancel-transfer)
           (lambda (object) (setq canceled object))))
-      (let* ((demand
-              (bili-cover-demand
-               '(video "BV1")
-               "https://i0.hdslb.com/bfs/a.jpg"))
+      (let* ((url "https://i0.hdslb.com/bfs/a.jpg")
+             (demand (bili-cover-demand '(video "BV1") url))
+             (shared (bili-cover-demand '(video "BV2") url))
              (cancellation
               (funcall
                (appkit-resource-demand-loader demand)
@@ -33,9 +32,15 @@
                     'shared))
         (should (eq (appkit-resource-demand-cache-policy demand)
                     'while-interested))
+        (should-not (equal (appkit-resource-demand-key demand)
+                           (appkit-resource-demand-key shared)))
+        (should (equal (appkit-resource-demand-input demand)
+                       (appkit-resource-demand-input shared)))
         (should
-         (equal (alist-get 'url (car captured))
-                "https://i0.hdslb.com/bfs/a.jpg"))
+         (equal (appkit-resource-demand-acquisition-identity demand)
+                (appkit-resource-demand-acquisition-identity shared)))
+        (should
+         (equal (alist-get 'url (car captured)) url))
         (let ((headers (plist-get (nth 2 captured) :headers)))
           (should (equal (cdr (assoc "Referer" headers))
                          "https://www.bilibili.com/"))

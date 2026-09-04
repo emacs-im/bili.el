@@ -37,6 +37,9 @@
 (defconst bili-detail--playback-request-key 'playback
   "Surface Effect key for playback URL resolution.")
 
+(defconst bili-detail--playback-presentation-key 'playback-presentation
+  "Surface Effect key for the active video presentation.")
+
 (defconst bili-detail-row-key-property 'bili-detail-row-key
   "Text property carrying a stable Bilibili detail row key.")
 
@@ -626,12 +629,15 @@
       (appkit-next
        :model next :render (bili-detail--render-change)))))
 
-(defun bili-detail--playback-effect (surface app-read-view state page)
-  "Return playback Effect for SURFACE's canonical detail entity."
+(defun bili-detail--playback-resolution-effect (app-read-view state page)
+  "Return the transport Effect resolving playback from committed STATE."
   (let* ((entity (bili-detail--model app-read-view state))
          (selected
           (and (bili-video-p entity)
-               (or page (bili-detail--selected-page entity state)))))
+               (or page (bili-detail--selected-page entity state))))
+         (input (if (bili-video-p entity)
+                    (list entity selected)
+                  (list entity))))
     (unless entity
       (user-error "Bilibili detail has not loaded"))
     (when (and (bili-live-room-p entity)
@@ -639,25 +645,34 @@
       (user-error "This live room has no supported live stream"))
     (appkit-effect-create
      :key bili-detail--playback-request-key
-     :input
-     (if (bili-video-p entity)
-         (list (appkit-surface-app surface) entity selected)
-       (list (appkit-surface-app surface) entity))
+     :input input
      :start
      (if (bili-video-p entity)
-         #'bili-playback--video-effect-start
-       #'bili-playback--live-effect-start)
-     :success (lambda (_input _buffer) '(playback succeeded))
+         #'bili-playback--video-transport-start
+       #'bili-playback--live-transport-start)
+     :success
+     (lambda (owned-input data)
+       (list 'playback 'resolved owned-input data))
      :failure
      (lambda (_input reason)
        (list 'playback 'failed (format "%s" reason)))
      :cancellation-requirement 'transport)))
 
+(defun bili-detail--playback-presentation-effect (presentation)
+  "Return the Effect owning video PRESENTATION until its viewer closes."
+  (appkit-effect-create
+   :key bili-detail--playback-presentation-key
+   :input presentation
+   :start #'appkit-media-video-presentation-start
+   :success (lambda (_input _reason) '(playback closed))
+   :failure
+   (lambda (_input reason)
+     (list 'playback 'failed (format "%s" reason)))
+   :cancellation-requirement 'logical))
+
 (defun bili-detail--surface-play (context state page)
-  "Start PAGE playback from detail STATE."
-  (let* ((surface (or (bili-detail--current-surface)
-                      (error "Detail playback lacks its Surface")))
-         (app-read-view
+  "Resolve PAGE playback from detail STATE."
+  (let* ((app-read-view
           (appkit-transition-context-app-read-view context))
          (next (copy-sequence state))
          (selected
@@ -671,9 +686,38 @@
      :render (bili-detail--render-change)
      :commands
      (list
+      (appkit-command-cancel-effect
+       bili-detail--playback-presentation-key)
       (appkit-command-start-effect
-       (bili-detail--playback-effect
-        surface app-read-view next page))))))
+       (bili-detail--playback-resolution-effect
+        app-read-view next page))))))
+
+(defun bili-detail--surface-playback-resolved (state input data)
+  "Present resolved playback DATA for owned INPUT from STATE."
+  (condition-case condition
+      (let* ((entity (car input))
+             (presentation
+              (if (bili-video-p entity)
+                  (bili-playback-video-presentation
+                   entity data :page (cadr input))
+                (bili-playback-live-presentation entity data)))
+             (next (copy-sequence state)))
+        (setf (plist-get next :playback-phase) 'playing
+              (plist-get next :playback-message) nil)
+        (appkit-next
+         :model next
+         :render (bili-detail--render-change)
+         :commands
+         (list
+          (appkit-command-start-effect
+           (bili-detail--playback-presentation-effect presentation)))))
+    ((error quit)
+     (let ((next (copy-sequence state)))
+       (setf (plist-get next :playback-phase) 'error
+             (plist-get next :playback-message)
+             (error-message-string condition))
+       (appkit-next
+        :model next :render (bili-detail--render-change))))))
 
 (defun bili-detail--surface-update (context state message)
   "Advance detail Surface STATE for MESSAGE."
@@ -686,7 +730,9 @@
      (bili-detail--surface-failed state token reason))
     (`(play ,page)
      (bili-detail--surface-play context state page))
-    ('(playback succeeded)
+    (`(playback resolved ,input ,data)
+     (bili-detail--surface-playback-resolved state input data))
+    ('(playback closed)
      (let ((next (copy-sequence state)))
        (setf (plist-get next :playback-phase) 'idle
              (plist-get next :playback-message) nil)

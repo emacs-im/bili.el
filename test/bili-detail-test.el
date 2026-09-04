@@ -28,7 +28,7 @@
    :description "Room description"))
 
 (ert-deftest bili-detail-video-renders-and-plays-selected-part ()
-  (let (surface requested-cid opened-page)
+  (let (surface requested-cid opened-presentation)
     (unwind-protect
         (cl-letf
             (((symbol-function 'bili-cover--image-display-available-p)
@@ -43,10 +43,11 @@
                  callback
                  '((quality . 64)
                    (durl . (((url . "https://cdn.example/video.mp4"))))))))
-             ((symbol-function 'bili-playback-open-video)
-              (lambda (_video _data _owner &rest keys)
-                (setq opened-page (plist-get keys :page))
-                (current-buffer))))
+             ((symbol-function 'appkit-media-video-presentation-start)
+              (lambda (_context input _observe resolve _reject)
+                (setq opened-presentation input)
+                (funcall resolve 'closed)
+                nil)))
           (setq surface
                 (bili-detail-open-video "BV1xx411c7mD"))
           (bili-test-drain surface)
@@ -64,7 +65,10 @@
                 "BV1xx411c7mD")))))
           (bili-test-drain surface)
           (should (= requested-cid 43))
-          (should (= (bili-video-page-cid opened-page) 43))
+          (should
+           (equal
+            (appkit-media-video-presentation-cache-key opened-presentation)
+            "bili-video:BV1xx411c7mD:43:64"))
           (should (eq (plist-get
                        (appkit-surface-model surface) :playback-phase)
                       'idle)))
