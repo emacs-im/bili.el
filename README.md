@@ -43,7 +43,7 @@ make check
 | `M-x bili-open` | Open a BV id, video URL, live-room id, or live-room URL. |
 | `M-x bili-login` | Import the minimal browser session required by the API. |
 | `M-x bili-logout` | Delete imported credentials. |
-| `M-x bili-core-stop` | Stop the application and all owned requests and media sessions. |
+| `M-x bili-core-stop` | Stop the canonical App, generated surfaces, and owned effects. |
 
 `M-x bili` uses `/x/web-interface/popular`. It is Bilibili's comprehensive
 popular list, not an account-personalized home feed. Use
@@ -52,7 +52,7 @@ popular list, not an account-personalized home feed. Use
 Catalogs load additional pages automatically near the visible window edge.
 There is no manual “next page” command.
 
-## Views
+## Generated surfaces
 
 ### Catalogs
 
@@ -67,9 +67,9 @@ There is no manual “next page” command.
 - `o`: open a URL or identifier
 - `q`: return
 
-Catalog covers are Appkit image slices placed through display-only line
-prefixes. Right-edge metadata uses Appkit `:align-to` display spaces; source
-buffer text is not padded for visual alignment.
+Catalog rows are stable-key projections. Covers are shared declarative Appkit
+Resources rendered as display-only line-prefix slices; source buffer text is
+not padded for visual alignment.
 
 ### Video and live-room details
 
@@ -82,11 +82,11 @@ buffer text is not padded for visual alignment.
 - `n` / `p`: next or previous action
 - `q`: return
 
-Video comments use `appkit-discussion`: stable root/reply identities, parent and
-depth metadata, connectors, circular avatars, right-aligned timestamps, and
-semantic entry navigation. Main-comment pagination follows Bilibili's opaque
-cursor and loads on scroll. The view is read-only; the API's nested reply
-previews are displayed below their roots.
+Video comments use an Appkit Generated Surface and `appkit-discussion`: stable
+root/reply identities, parent and depth metadata, connectors, circular avatars,
+right-aligned timestamps, and semantic entry navigation. Avatars are
+declarative Resources. Main-comment pagination follows Bilibili's opaque cursor
+and loads on scroll; nested reply previews are displayed below their roots.
 
 ### Evil
 
@@ -95,6 +95,15 @@ When Evil is loaded, bili.el installs state-local bindings through
 Application navigation is available under `g` prefixes, including `g f` for
 the personalized feed, `g c` for comments, and `g j` / `g k` for semantic row
 navigation.
+
+## Runtime ownership
+
+The canonical App stores immutable video, live-room, and comment entities and
+runs keyed metadata Effects. Generated Surfaces own catalog membership,
+pagination, selection, presentation phases, and stale-request fencing.
+Projections render canonical entities by stable key. Cover and avatar
+acquisition is declarative Resource demand; playback resolution is a
+Surface-owned Effect.
 
 ## Authentication and transport boundaries
 

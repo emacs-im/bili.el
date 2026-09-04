@@ -115,7 +115,7 @@
                    (numResults . 1)
                    (result
                     . (,(bili-browse-test--video-json
-                         "Updated canonical title")))))))))
+                         "Updated canonical title"))))))))
           (setq home (bili-browse-home))
           (bili-test-drain home)
           (with-current-buffer (appkit-surface-buffer home)
@@ -125,7 +125,7 @@
           (appkit-surface-send home 'geometry)
           (with-current-buffer (appkit-surface-buffer home)
             (should (string-match-p
-                     "Updated canonical title" (buffer-string))))
+                     "Updated canonical title" (buffer-string)))))
       (bili-test-stop-surface home)
       (bili-test-stop-surface search)
       (bili-core-stop))))

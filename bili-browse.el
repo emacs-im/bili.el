@@ -609,7 +609,7 @@ Set this to nil to disable automatic pagination."
       :project-all #'bili-browse--catalog-project
       :printer #'bili-browse--print-catalog-row
       :anchor-property bili-browse-row-key-property
-      :geometry-mode 'reproject
+      :geometry-mode 'redraw
       :no-separator-p t)))
   "Generated Surface type for Bilibili catalogs.")
 

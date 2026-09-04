@@ -5,14 +5,23 @@
 (require 'appkit-surface)
 (require 'bili-core)
 
-(defun bili-test-drain (surface &optional passes)
-  "Run enough App and SURFACE passes to settle synchronous test Effects."
-  (dotimes (_ (or passes 4))
-    (when (appkit-app-live-p (appkit-surface-app surface))
-      (appkit-loop-run-pass
-       (appkit-app-loop (appkit-surface-app surface))))
-    (when (appkit-surface-live-p surface)
-      (appkit-loop-run-pass (appkit-surface-loop surface))))
+(defun bili-test-drain (surface &optional pass-limit)
+  "Drain synchronous App and SURFACE work within PASS-LIMIT passes."
+  (let* ((app (appkit-surface-app surface))
+         (app-loop (appkit-app-loop app))
+         (surface-loop (appkit-surface-loop surface))
+         (remaining (or pass-limit 16))
+         first-pass)
+    (while (and (> remaining 0)
+                (or (not first-pass)
+                    (> (appkit-loop-pending-count app-loop) 0)
+                    (> (appkit-loop-pending-count surface-loop) 0)))
+      (setq first-pass t
+            remaining (1- remaining))
+      (when (appkit-app-live-p app)
+        (appkit-loop-run-pass app-loop))
+      (when (appkit-surface-live-p surface)
+        (appkit-loop-run-pass surface-loop))))
   surface)
 
 (defun bili-test-stop-surface (surface)
