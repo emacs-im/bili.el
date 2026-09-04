@@ -5,8 +5,8 @@
 
 ;;; Commentary:
 
-;; HTTPS-only read transport, response validation, Appkit lifecycle ownership,
-;; and WBI signing.  This is the only module that sends account cookies.
+;; HTTPS-only read transport, response validation, Effect cancellation
+;; capabilities, and WBI signing.  This is the only module that sends cookies.
 
 ;;; Code:
 
@@ -17,6 +17,7 @@
 (require 'url-parse)
 (require 'url-util)
 (require 'appkit-core)
+(require 'appkit-effect)
 (require 'bili-auth)
 (require 'bili-core)
 
@@ -42,6 +43,15 @@
       37 48 7 16 24 55 40 61 26 17 0 1 60 51 30 4
       22 25 54 21 56 59 6 63 57 62 11 36 20 34 44 52]
   "Permutation used to derive Bilibili's WBI mixin key.")
+
+(defconst bili-api--effect-owner (make-symbol "bili-api-effect-owner")
+  "Sentinel selecting Effect-owned transport without an AppKit handle.")
+
+(defvar bili-api--wbi-key nil
+  "Transport-local cached WBI signing key.")
+
+(defvar bili-api--wbi-expires-at nil
+  "Expiry time for `bili-api--wbi-key'.")
 
 (cl-defstruct (bili-api-request
                (:constructor bili-api--request-create))
@@ -245,7 +255,9 @@ ACCEPTED-CODES permits explicitly useful nonzero provider response codes."
         result failure)
     (when (and (not (bili-api-request-settled-p request))
                (eq buffer (bili-api-request-buffer request))
-               (appkit-handle-alive-p (bili-api-request-handle request)))
+               (or (null (bili-api-request-handle request))
+                   (appkit-handle-alive-p
+                    (bili-api-request-handle request))))
       (condition-case error-data
           (setq result (bili-api--response-data status accepted-codes))
         (error
@@ -298,21 +310,28 @@ ACCEPTED-CODES permits explicitly useful nonzero provider response codes."
     buffer))
 
 (defun bili-api--start (callback errback owner starter)
-  "Create a request for CALLBACK and ERRBACK under OWNER, then call STARTER."
+  "Create a request for CALLBACK and ERRBACK, then call STARTER.
+
+OWNER is either a live AppKit lifecycle owner or `bili-api--effect-owner'.
+Effect-owned requests return their opaque request as the transport
+cancellation target and do not register a second lifecycle authority."
   (unless (functionp callback)
     (error "Bilibili request callback is not callable"))
   (let* ((error-fn (or errback (lambda (message) (message "%s" message))))
-         (request-owner (or owner (bili-core-app)))
+         (effect-owned-p (eq owner bili-api--effect-owner))
+         (request-owner (and (not effect-owned-p)
+                             (or owner (bili-core-app))))
          (request
           (bili-api--request-create
            :owner request-owner :callback callback :errback error-fn)))
     (unless (functionp error-fn)
       (error "Bilibili request error callback is not callable"))
-    (unless (appkit-owner-live-p request-owner)
+    (unless (or effect-owned-p (appkit-owner-live-p request-owner))
       (error "Bilibili request owner is not live"))
-    (setf (bili-api-request-handle request)
-          (appkit-register-handle
-           request-owner 'function request #'bili-api--cancel-owned))
+    (unless effect-owned-p
+      (setf (bili-api-request-handle request)
+            (appkit-register-handle
+             request-owner 'function request #'bili-api--cancel-owned)))
     (condition-case error-data
         (progn
           (funcall starter request)
@@ -339,23 +358,21 @@ Appkit application and owns cancellation."
       request (bili-api--endpoint-url root endpoint parameters)
       (lambda (data) (bili-api--succeed request data))))))
 
-(defun bili-api--cached-wbi-key (app)
-  "Return APP's current WBI key, or nil when stale."
-  (let ((session (bili-core-session app)))
-    (when (and (stringp (bili-core-session-wbi-key session))
-               (numberp (bili-core-session-wbi-expires-at session))
-               (> (bili-core-session-wbi-expires-at session) (float-time)))
-      (bili-core-session-wbi-key session))))
+(defun bili-api--cached-wbi-key ()
+  "Return the current transport WBI key, or nil when stale."
+  (when (and (stringp bili-api--wbi-key)
+             (numberp bili-api--wbi-expires-at)
+             (> bili-api--wbi-expires-at (float-time)))
+    bili-api--wbi-key))
 
-(defun bili-api--install-wbi-key (app data)
-  "Derive, cache, and return APP's WBI key from navigation DATA."
+(defun bili-api--install-wbi-key (data)
+  "Derive, cache, and return a WBI key from navigation DATA."
   (let* ((wbi (alist-get 'wbi_img data))
          (key
           (bili-api-wbi-mixin-key
-           (alist-get 'img_url wbi) (alist-get 'sub_url wbi)))
-         (session (bili-core-session app)))
-    (setf (bili-core-session-wbi-key session) key
-          (bili-core-session-wbi-expires-at session) (+ (float-time) 21600))
+           (alist-get 'img_url wbi) (alist-get 'sub_url wbi))))
+    (setq bili-api--wbi-key key
+          bili-api--wbi-expires-at (+ (float-time) 21600))
     key))
 
 (defun bili-api--dispatch-wbi-endpoint
@@ -374,13 +391,11 @@ MIXIN-KEY signs the request."
   "GET signed WBI ROOT ENDPOINT with PARAMETERS and deliver to CALLBACK.
 
 ERRBACK and OWNER have the same meanings as in `bili-api-get'."
-  (let* ((request-owner (or owner (bili-core-app)))
-         (app (or (appkit-owner-app request-owner)
-                  (error "Bilibili request has no Appkit application"))))
+  (let ((request-owner (or owner (bili-core-app))))
     (bili-api--start
      callback errback request-owner
      (lambda (request)
-       (if-let* ((key (bili-api--cached-wbi-key app)))
+       (if-let* ((key (bili-api--cached-wbi-key)))
            (bili-api--dispatch-wbi-endpoint
             request root endpoint parameters key)
          (bili-api--dispatch-step
@@ -391,7 +406,7 @@ ERRBACK and OWNER have the same meanings as in `bili-api-get'."
             (condition-case error-data
                 (bili-api--dispatch-wbi-endpoint
                  request root endpoint parameters
-                 (bili-api--install-wbi-key app data))
+                 (bili-api--install-wbi-key data))
               (error
                (bili-api--fail
                 request
