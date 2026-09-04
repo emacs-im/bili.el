@@ -25,13 +25,6 @@ cd /path/to/video.el
 eask run script build-native
 ```
 
-For development in this repository:
-
-```sh
-make test-local
-make check
-```
-
 ## Commands
 
 | Command | Purpose |
