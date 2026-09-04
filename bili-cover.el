@@ -1,17 +1,13 @@
-;;; bili-cover.el --- Bilibili cover acquisition and rendering  -*- lexical-binding: t; -*-
+;;; bili-cover.el --- Bilibili declarative cover resources  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 0WD0
-
-;; Author: 0WD0 <me@0wd0.com>
-;; Maintainer: 0WD0 <me@0wd0.com>
-;; Keywords: multimedia
-;; Package-Requires: ((emacs "30.1") (appkit "0.3"))
+;; SPDX-License-Identifier: MIT
 
 ;;; Commentary:
 
-;; Fetch public Bilibili cover art into an Appkit-owned disk cache.  Stable
-;; entity keys own acquisition state; transport URLs only select a cache
-;; revision.  Account cookies never cross this boundary.
+;; Describe public Bilibili cover acquisition as Appkit Resource demand and
+;; render ready files from Surface-scoped presentation state.  Account cookies
+;; never cross this boundary.
 
 ;;; Code:
 
@@ -19,12 +15,11 @@
 (require 'cl-lib)
 (require 'subr-x)
 (require 'url-parse)
-(require 'appkit-core)
 (require 'appkit-media-image)
 (require 'appkit-media-resource)
-(require 'appkit-presentation)
+(require 'appkit-resource)
+(require 'appkit-surface)
 (require 'bili-api)
-(require 'bili-core)
 
 (defcustom bili-cover-cache-directory
   (locate-user-emacs-file "bili/covers/")
@@ -47,17 +42,8 @@
   :type 'integer
   :group 'bili)
 
-(defcustom bili-cover-retry-delay 60
-  "Seconds before retrying one failed cover acquisition."
-  :type 'number
-  :group 'bili)
-
 (defvar bili-cover--image-cache (make-hash-table :test #'equal)
   "Decoded cover descriptors keyed by local file identity and geometry.")
-
-(defun bili-cover-resource-key (entity-key)
-  "Return the Appkit cover resource key for stable ENTITY-KEY."
-  (cons 'cover entity-key))
 
 (defconst bili-cover-trusted-domain-suffixes
   '("hdslb.com" "biliimg.com")
@@ -93,16 +79,20 @@
               candidate))
         (error nil)))))
 
+(defun bili-cover-resource-key (entity-key url)
+  "Return the Resource key for ENTITY-KEY's normalized URL revision."
+  (list 'cover entity-key (bili-cover-normalize-url url)))
+
 (defun bili-cover--image-capable-frame-p (frame)
   "Return non-nil when live FRAME can render inline images."
   (and (frame-live-p frame)
        (with-selected-frame frame
          (appkit-media-inline-image-rendering-available-p))))
 
-(defun bili-cover--display-frame (&optional view)
-  "Return an image-capable frame, preferring VIEW's display window."
-  (or (when (and (appkit-view-p view) (appkit-view-live-p view))
-        (when-let* ((buffer (appkit-view-buffer view))
+(defun bili-cover--display-frame (&optional surface)
+  "Return an image-capable frame, preferring SURFACE's display window."
+  (or (when (appkit-surface-live-p surface)
+        (when-let* ((buffer (appkit-surface-buffer surface))
                     ((buffer-live-p buffer))
                     (window (appkit-geometry-display-window buffer))
                     ((window-live-p window))
@@ -131,112 +121,55 @@
   (appkit-media-image-cache-existing-file
    (bili-cover--cache-base entity-key url)))
 
-(defun bili-cover--state-current-p (app entity-key url token)
-  "Return non-nil when APP still expects URL and TOKEN for ENTITY-KEY."
-  (let ((state (and (appkit-app-live-p app)
-                    (bili-core-cover-state app entity-key))))
-    (and (equal (plist-get state :url) url)
-         (eq (plist-get state :token) token))))
+(defun bili-cover--load (_context input success failure)
+  "Acquire cover INPUT, resolving SUCCESS or FAILURE."
+  (pcase-let* ((`(,entity-key ,url) input)
+               (cached (bili-cover--cached-file entity-key url)))
+    (if cached
+        (progn (funcall success cached) nil)
+      (let ((transfer
+             (appkit-media-cache-image-resource-async
+              `((url . ,url)
+                (name . ,(or (appkit-media-url-filename url) "cover.img")))
+              (bili-cover--cache-base entity-key url)
+              success failure
+              :headers
+              `(("Accept" . "image/avif,image/webp,image/*;q=0.8,*/*;q=0.1")
+                ("Referer" . "https://www.bilibili.com/")
+                ("User-Agent" . ,bili-api-user-agent)))))
+        (when (appkit-media-transfer-p transfer)
+          (appkit-cancellation-create
+           :kind 'transport
+           :cancel (lambda ()
+                     (appkit-media-cancel-transfer transfer))))))))
 
-(defun bili-cover--failed-state (url reason)
-  "Return a failed cover state for URL and readable REASON."
-  (list :url url :status 'failed
-        :reason (format "%s" reason)
-        :retry-at (+ (float-time) bili-cover-retry-delay)))
-
-(defun bili-cover--start-fetch (app entity-key url)
-  "Start APP's cover transfer for ENTITY-KEY from URL."
-  (let ((token (gensym "bili-cover-"))
-        transfer lifecycle-handle completed-p)
-    (bili-core-store-cover-state
-     app entity-key (list :url url :status 'pending :token token))
-    (cl-labels
-        ((finish
-          (new-state)
-          (unless completed-p
-            (setq completed-p t)
-            (when lifecycle-handle
-              (appkit-retire-handle lifecycle-handle))
-            (when (bili-cover--state-current-p app entity-key url token)
-              (bili-core-store-cover-state app entity-key new-state)))))
-      (condition-case error-data
-          (progn
-            (setq transfer
-                  (appkit-media-cache-image-resource-async
-                   `((url . ,url)
-                     (name . ,(or (appkit-media-url-filename url)
-                                  "cover.img")))
-                   (bili-cover--cache-base entity-key url)
-                   (lambda (downloaded)
-                     (finish (list :url url :status 'ready
-                                   :file downloaded)))
-                   (lambda (reason)
-                     (finish (bili-cover--failed-state url reason)))
-                   :headers
-                   `(("Accept" . "image/avif,image/webp,image/*;q=0.8,*/*;q=0.1")
-                     ("Referer" . "https://www.bilibili.com/")
-                     ("User-Agent" . ,bili-api-user-agent))))
-            (when (and (appkit-media-transfer-p transfer)
-                       (not completed-p))
-              (setq lifecycle-handle
-                    (appkit-register-handle
-                     app 'function transfer #'appkit-media-cancel-transfer)))
-            transfer)
-        (error
-         (when (appkit-media-transfer-p transfer)
-           (appkit-media-cancel-transfer transfer))
-         (finish
-          (bili-cover--failed-state
-           url (error-message-string error-data)))
-         nil)))))
-
-(defun bili-cover-prefetch (app entity-key url)
-  "Ensure APP is acquiring public cover URL for stable ENTITY-KEY.
-
-Return the Appkit media transfer handle, or nil when no transfer is needed.
-The transfer is owned by APP, shared by Appkit when byte-identical, and never
-sends account cookies."
-  (when-let* ((url (bili-cover-normalize-url url))
-              ((appkit-app-live-p app))
+(defun bili-cover-demand (entity-key value)
+  "Return declarative cover demand for ENTITY-KEY and URL VALUE, or nil."
+  (when-let* ((url (bili-cover-normalize-url value))
               ((bili-cover--image-display-available-p)))
-    (let* ((state (bili-core-cover-state app entity-key))
-           (same-source (equal (plist-get state :url) url))
-           (status (and same-source (plist-get state :status)))
-           (file (and same-source (plist-get state :file))))
-      (cond
-       ((and (eq status 'ready)
-             (stringp file)
-             (file-readable-p file))
-        nil)
-       ((eq status 'pending) nil)
-       ((and (eq status 'failed)
-             (> (or (plist-get state :retry-at) 0) (float-time)))
-        nil)
-       (t
-        (if-let* ((cached (bili-cover--cached-file entity-key url)))
-            (progn
-              (bili-core-store-cover-state
-               app entity-key
-               (list :url url :status 'ready :file cached))
-              nil)
-          (bili-cover--start-fetch app entity-key url)))))))
+    (appkit-resource-demand-create
+     :key (bili-cover-resource-key entity-key url)
+     :input (list entity-key url)
+     :loader #'bili-cover--load
+     :acquisition-identity (list 'bili-cover url)
+     :sharing-policy 'shared
+     :cache-policy 'while-interested)))
 
-(defun bili-cover--file (app entity-key url)
-  "Return APP's ready cover file for ENTITY-KEY and URL, or nil."
-  (let ((state (bili-core-cover-state app entity-key)))
-    (when-let* ((file (plist-get state :file)))
-      (when (and (equal (plist-get state :url) url)
-                 (eq (plist-get state :status) 'ready)
-                 (file-readable-p file))
-        file))))
+(defun bili-cover--file (surface entity-key url)
+  "Return SURFACE's ready cover file for ENTITY-KEY and URL, or nil."
+  (when-let* ((state
+               (appkit-resource-state
+                surface (bili-cover-resource-key entity-key url)))
+              ((eq (appkit-resource-state-status state) 'ready))
+              (file (appkit-resource-state-value state))
+              ((stringp file))
+              ((file-readable-p file)))
+    file))
 
-(defun bili-cover-image (app entity-key url pixel-width pixel-height)
-  "Return APP's cached cover image for ENTITY-KEY and URL.
-
-PIXEL-WIDTH and PIXEL-HEIGHT define a center-cropped display box.  This
-function performs no network I/O; `bili-cover-prefetch' owns acquisition."
+(defun bili-cover-image (surface entity-key url pixel-width pixel-height)
+  "Return SURFACE's cached cover image for ENTITY-KEY and URL."
   (when-let* ((url (bili-cover-normalize-url url))
-              (file (bili-cover--file app entity-key url))
+              (file (bili-cover--file surface entity-key url))
               (attributes (file-attributes file 'string)))
     (let* ((identity
             (list file (file-attribute-size attributes)
@@ -250,14 +183,9 @@ function performs no network I/O; `bili-cover-prefetch' owns acquisition."
             (puthash identity image bili-cover--image-cache)
             image)))))
 
-(defun bili-cover-catalog-slices (view entity-key url)
-  "Return `(COLUMNS . ROWS)' for ENTITY-KEY's catalog cover in VIEW.
-
-URL identifies the current public cover revision.  ROWS are display-only image
-slices or fixed-width display spaces.  The buffer therefore contains no cover
-padding, and loading an image cannot shift the right-hand card content."
-  (let* ((app (appkit-view-app view))
-         (frame (bili-cover--display-frame view))
+(defun bili-cover-catalog-slices (surface entity-key url)
+  "Return `(COLUMNS . ROWS)' for ENTITY-KEY's catalog cover in SURFACE."
+  (let* ((frame (bili-cover--display-frame surface))
          (line-count (min 4 (max 3 bili-cover-catalog-lines)))
          (height (* line-count (max 1 (frame-char-height frame))))
          (width (min (max 1 bili-cover-catalog-max-width)
@@ -266,7 +194,7 @@ padding, and loading an image cannot shift the right-hand card content."
                                     (max 1 (frame-char-width frame))))))
          (image
           (with-selected-frame frame
-            (bili-cover-image app entity-key url width height)))
+            (bili-cover-image surface entity-key url width height)))
          (source-rows
           (and image
                (with-selected-frame frame
@@ -288,15 +216,11 @@ padding, and loading an image cannot shift the right-hand card content."
         (push row rows)))
     (cons columns (nreverse rows))))
 
-(defun bili-cover-avatar-image (view entity-key url pixel-size)
-  "Return VIEW's cached circular avatar for ENTITY-KEY and URL.
-
-PIXEL-SIZE is evaluated on VIEW's actual display frame.  This function
-performs no network I/O; `bili-cover-prefetch' owns acquisition."
-  (let* ((app (appkit-view-app view))
-         (frame (bili-cover--display-frame view)))
+(defun bili-cover-avatar-image (surface entity-key url pixel-size)
+  "Return SURFACE's cached circular avatar for ENTITY-KEY and URL."
+  (let ((frame (bili-cover--display-frame surface)))
     (when-let* ((url (bili-cover-normalize-url url))
-                (file (bili-cover--file app entity-key url))
+                (file (bili-cover--file surface entity-key url))
                 (attributes (file-attributes file 'string)))
       (let* ((identity
               (list 'avatar file (file-attribute-size attributes)
@@ -311,19 +235,18 @@ performs no network I/O; `bili-cover-prefetch' owns acquisition."
                 (puthash identity image bili-cover--image-cache)
                 image)))))))
 
-(defun bili-cover-detail-image (view entity-key url)
-  "Return a responsive 16:9 cover image for VIEW, ENTITY-KEY, and URL."
-  (let* ((frame (bili-cover--display-frame view))
+(defun bili-cover-detail-image (surface entity-key url)
+  "Return a responsive 16:9 cover image for SURFACE and ENTITY-KEY."
+  (let* ((frame (bili-cover--display-frame surface))
          (columns
-          (with-current-buffer (appkit-view-buffer view)
-            (or (appkit-view-responsive-width 4) 76)))
+          (with-current-buffer (appkit-surface-buffer surface)
+            (or (appkit-surface-responsive-width surface 4) 76)))
          (width (max 160
                      (min bili-cover-detail-max-width
                           (* columns (max 1 (frame-char-width frame))))))
          (height (max 90 (round (* width (/ 9.0 16.0))))))
     (with-selected-frame frame
-      (bili-cover-image
-       (appkit-view-app view) entity-key url width height))))
+      (bili-cover-image surface entity-key url width height))))
 
 (provide 'bili-cover)
 

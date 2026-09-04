@@ -15,9 +15,11 @@
 (require 'cl-lib)
 (require 'seq)
 (require 'subr-x)
-(require 'appkit-core)
-(require 'appkit-invalidation)
+(require 'appkit-command)
+(require 'appkit-effect)
 (require 'appkit-projection)
+(require 'appkit-resource)
+(require 'appkit-surface)
 (require 'appkit-media-image)
 (require 'appkit-ui)
 (require 'bili-api)
@@ -30,10 +32,10 @@
 (require 'bili-render)
 
 (defconst bili-detail--request-key 'detail
-  "View request-table key for entity metadata.")
+  "App Effect key prefix for entity metadata.")
 
 (defconst bili-detail--playback-request-key 'playback
-  "View request-table key for playback URL resolution.")
+  "Surface Effect key for playback URL resolution.")
 
 (defconst bili-detail-row-key-property 'bili-detail-row-key
   "Text property carrying a stable Bilibili detail row key.")
@@ -63,28 +65,30 @@
     (setq-local filter-buffer-substring-function
                 #'appkit-ui-buffer-substring-filter)))
 
-(defun bili-detail--state (view)
-  "Return validated detail state owned by VIEW."
-  (let ((state (and (appkit-view-p view) (appkit-view-state view))))
+(defun bili-detail--state (owner)
+  "Return validated detail state from OWNER."
+  (let ((state (if (appkit-surface-p owner)
+                   (appkit-surface-model owner)
+                 owner)))
     (unless (and (listp state)
                  (eq (plist-get state :type) 'detail)
                  (memq (plist-get state :kind) '(video live)))
       (error "Invalid Bilibili detail state"))
     state))
 
-(defun bili-detail--current-view ()
-  "Return the current live Bilibili detail view, or nil."
-  (when-let* ((view (appkit-current-view))
-              ((appkit-view-live-p view))
-              (state (appkit-view-state view))
+(defun bili-detail--current-surface ()
+  "Return the current live Bilibili detail Surface, or nil."
+  (when-let* ((surface (appkit-current-surface))
+              ((appkit-surface-live-p surface))
+              (state (appkit-surface-model surface))
               ((eq (plist-get state :type) 'detail)))
-    view))
+    surface))
 
-(defun bili-detail--model (view state)
-  "Return VIEW's canonical model selected by detail STATE."
+(defun bili-detail--model (app-read-view state)
+  "Return APP-READ-VIEW's canonical model selected by detail STATE."
   (pcase (plist-get state :kind)
-    ('video (bili-core-video (appkit-view-app view) (plist-get state :id)))
-    ('live (bili-core-room (appkit-view-app view) (plist-get state :id)))))
+    ('video (bili-core-video app-read-view (plist-get state :id)))
+    ('live (bili-core-room app-read-view (plist-get state :id)))))
 
 (defun bili-detail--cover-data (model)
   "Return stable entity key and cover URL for MODEL."
@@ -96,23 +100,20 @@
     (cons (list 'live (bili-live-room-id model))
           (bili-live-room-cover model)))))
 
-(defun bili-detail--prefetch-cover (view model)
-  "Start MODEL's cover acquisition for VIEW's application."
-  (when-let* ((data (bili-detail--cover-data model))
-              (url (cdr data))
-              ((not (string-empty-p url))))
-    (bili-cover-prefetch (appkit-view-app view) (car data) url)))
 
 (defun bili-detail--cover-row (model resource)
-  "Return MODEL's cover projection row depending on RESOURCE."
+  "Return MODEL's cover row depending on canonical RESOURCE."
   (let* ((data (bili-detail--cover-data model))
          (entity-key (car data))
-         (url (cdr data)))
+         (url (cdr data))
+         (demand (bili-cover-demand entity-key url))
+         (resource-key
+          (and demand (appkit-resource-demand-key demand))))
     (bili-detail--row
      '(cover) 'cover ""
-     :entity-key entity-key :url url
-     :dependencies
-     (list resource (bili-cover-resource-key entity-key)))))
+     :entity-key entity-key :url url :resource-key resource-key
+     :dependencies (delq nil (list resource resource-key))
+     :resource-demands (and demand (list demand)))))
 
 (defun bili-detail--new-state (kind id &optional model)
   "Return fresh detail state for KIND, ID, and optional MODEL."
@@ -120,14 +121,14 @@
          (and (bili-video-p model) (bili-video-cid model))))
     (list :type 'detail :kind kind :id id
           :phase (if model 'ready 'initial)
-          :message nil :loaded-p (and model t) :position-intent nil
-          :selected-cid selected-cid
+          :message nil :loaded-p (and model t)
+          :request-token nil :selected-cid selected-cid
           :playback-phase 'idle :playback-message nil)))
 
 (defun bili-detail--header-line ()
-  "Return the persistent header line for the current detail view."
-  (if-let* ((view (bili-detail--current-view))
-            (state (bili-detail--state view)))
+  "Return the persistent header line for the current detail Surface."
+  (if-let* ((surface (bili-detail--current-surface))
+            (state (bili-detail--state surface)))
       (let ((phase (plist-get state :phase))
             (playback (plist-get state :playback-phase)))
         (format " Bilibili · %s · %s%s%s"
@@ -333,12 +334,10 @@
                                        :dependencies (list resource))))))
     rows))
 
-(defun bili-detail--rows (view state)
-  "Return Appkit projection rows for VIEW and detail STATE."
-  (let ((model (bili-detail--model view state))
+(defun bili-detail--rows (_surface app-read-view state)
+  "Return projected rows for detail STATE against APP-READ-VIEW."
+  (let ((model (bili-detail--model app-read-view state))
         rows)
-    (when model
-      (bili-detail--prefetch-cover view model))
     (when (memq (plist-get state :phase) '(initial refresh))
       (push (bili-detail--row
              '(request-status) 'note
@@ -366,11 +365,13 @@
        (appkit-projection-row-create
         :key (plist-get entry :key)
         :payload entry
-        :dependencies (plist-get entry :dependencies)))
+        :dependencies (plist-get entry :dependencies)
+        :resource-demands (plist-get entry :resource-demands)))
      rows)))
 
-(defun bili-detail--print-row (projection-row)
-  "Render one Appkit PROJECTION-ROW."
+(defun bili-detail--print-row
+    (surface _app-read-view projection-row)
+  "Render PROJECTION-ROW for detail SURFACE."
   (let* ((entry (appkit-projection-row-payload projection-row))
          (key (appkit-projection-row-key projection-row))
          (type (plist-get entry :type))
@@ -385,25 +386,25 @@
       ('note (appkit-presentation-insert-note-line text :face (or face 'shadow)))
       ('error (appkit-presentation-insert-note-line text :face 'bili-error-face))
       ('cover
-       (let* ((view (or (bili-detail--current-view)
-                        (error "No live Bilibili detail view")))
-              (image
-               (bili-cover-detail-image
-                view (plist-get entry :entity-key) (plist-get entry :url))))
+       (let ((image
+              (bili-cover-detail-image
+               surface (plist-get entry :entity-key)
+               (plist-get entry :url))))
          (if image
              (progn
                (appkit-media-insert-image-slices
                 image nil nil "[cover]" (plist-get entry :url))
                (insert "\n"))
-           (appkit-presentation-insert-note-line
-            (pcase (plist-get
-                    (bili-core-cover-state
-                     (appkit-view-app view) (plist-get entry :entity-key))
-                    :status)
-              ('pending "Loading cover...")
-              ('failed "Cover unavailable")
-              (_ "Cover unavailable"))
-            :face 'shadow))))
+           (let ((state
+                  (and (plist-get entry :resource-key)
+                       (appkit-resource-state
+                        surface (plist-get entry :resource-key)))))
+             (appkit-presentation-insert-note-line
+              (if (and state
+                       (eq (appkit-resource-state-status state) 'pending))
+                  "Loading cover..."
+                "Cover unavailable")
+              :face 'shadow)))))
       ('body
        (insert (propertize text 'face (or face 'default)) "\n"))
       ('action
@@ -431,155 +432,351 @@
      (list bili-detail-row-key-property key
            'rear-nonsticky (list bili-detail-row-key-property)))))
 
-(defun bili-detail--sync (view invalidations _events)
-  "Synchronize detail VIEW from INVALIDATIONS."
-  (let* ((state (bili-detail--state view))
-         (position (or (plist-get state :position-intent) 'preserve)))
-    (setf (plist-get state :position-intent) nil)
-    (with-current-buffer (appkit-view-buffer view)
-      (appkit-projection-sync-invalidations
-          view invalidations (bili-detail--rows view state)
-        :reconcile-parts '(details)
-        :position position)
-      (force-mode-line-update))))
 
 
-(defun bili-detail--request-failed (view state message)
-  "Install metadata failure MESSAGE in VIEW and STATE."
-  (setf (plist-get state :phase) 'error
-        (plist-get state :message) message)
-  (appkit-request-sync view :structure t :part 'details :position t))
+(defun bili-detail--render-change (&optional position)
+  "Return a full detail render request restoring POSITION."
+  (appkit-projection-change-create
+   :full-p t :frame-p t :position (or position 'preserve)))
 
-(defun bili-detail--request-succeeded (view state model phase)
-  "Install metadata MODEL in VIEW and STATE for request PHASE."
-  (condition-case error-data
-      (let ((app (appkit-view-app view)))
-        (pcase (plist-get state :kind)
-          ('video
-           (unless (and (bili-video-p model)
-                        (equal (bili-video-bvid model)
-                               (plist-get state :id)))
-             (error "Bilibili returned another video"))
-           (bili-core-store-video app model)
-           (unless (plist-get state :selected-cid)
-             (setf (plist-get state :selected-cid) (bili-video-cid model))))
-          ('live
-           (unless (and (bili-live-room-p model)
-                        (= (bili-live-room-id model) (plist-get state :id)))
-             (error "Bilibili returned another live room"))
-           (bili-core-store-room app model)))
-        (bili-detail--prefetch-cover view model)
-        (setf (plist-get state :phase) 'ready
-              (plist-get state :message) nil
-              (plist-get state :loaded-p) t
-              (plist-get state :position-intent)
-              (and (eq phase 'initial)
-                   (if (and (eq (plist-get state :kind) 'live)
-                            (not (= (bili-live-room-live-status model) 1)))
-                       '(title)
-                     '(action play))))
-        (appkit-request-sync view :structure t :part 'details :position t))
-    (error
-     (bili-detail--request-failed
-      view state (error-message-string error-data)))))
+(defun bili-detail--reply-command (route message)
+  "Return a report-delivery command sending MESSAGE to ROUTE."
+  (appkit-command-post-message
+   :target route :message message :delivery 'report))
 
-(defun bili-detail--start-request (view phase)
-  "Start metadata request for VIEW in PHASE."
-  (unless (memq phase '(initial refresh))
-    (error "Invalid Bilibili detail phase: %S" phase))
-  (let* ((state (bili-detail--state view))
-         (operation
-          (appkit-view-operation-begin view bili-detail--request-key)))
-    (setf (plist-get state :phase) phase
-          (plist-get state :message) nil)
-    (appkit-request-sync view :structure t :part 'details :position t)
-    (cl-labels
-        ((success
-          (model)
-          (when (appkit-view-operation-finish operation)
-            (bili-detail--request-succeeded view state model phase)))
-         (failure
-          (message)
-          (when (appkit-view-operation-finish operation)
-            (bili-detail--request-failed view state message))))
-      (pcase (plist-get state :kind)
-        ('video
-         (bili-api-video
-          (plist-get state :id)
-          (lambda (data)
-            (condition-case error-data
-                (success (bili-model-video-from-json data))
-              (error (failure (error-message-string error-data)))))
-          :errback #'failure :owner operation))
-        ('live
-         (bili-live-resolve-room
-          (plist-get state :id) #'success
-          :errback #'failure :owner operation))))))
+(defun bili-detail--metadata-effect (context token kind id)
+  "Return App Effect resolving KIND and ID for request TOKEN."
+  (let ((source (appkit-transition-context-source-address context))
+        (route (appkit-transition-context-reply-route context)))
+    (unless (and source route)
+      (error "Detail request lacks a live Surface reply route"))
+    (appkit-effect-create
+     :key (list bili-detail--request-key source)
+     :input (list token kind id route)
+     :start
+     (lambda (_effect-context input _observe resolve reject)
+       (pcase-let ((`(,_token ,request-kind ,request-id ,_route)
+                    input))
+         (pcase request-kind
+           ('video
+            (bili-api-effect-cancellation
+             (bili-api-video
+              request-id
+              (lambda (data)
+                (condition-case condition
+                    (funcall resolve
+                             (bili-model-video-from-json data))
+                  (error
+                   (funcall reject
+                            (error-message-string condition)))))
+              :errback reject
+              :owner bili-api--effect-owner)))
+           ('live
+            (bili-live-effect-cancellation
+             (bili-live-resolve-room
+              request-id resolve :errback reject
+              :owner bili-api--effect-owner)))
+           (_ (error "Unsupported Bilibili detail kind")))))
+     :success
+     (lambda (input entity)
+       (list 'detail 'transport-succeeded input entity))
+     :failure
+     (lambda (input reason)
+       (list 'detail 'transport-failed input (format "%s" reason)))
+     :cancellation-requirement 'transport)))
 
-(defun bili-detail--setup (view)
-  "Initialize projection for detail VIEW."
-  (with-current-buffer (appkit-view-buffer view)
-    (appkit-projection-ensure
-     view :printer #'bili-detail--print-row
-     :anchor-property bili-detail-row-key-property
-     :no-separator-p t))
-  (appkit-view-enable-responsive-geometry view)
-  (when-let* ((model (bili-detail--model view (bili-detail--state view))))
-    (bili-detail--prefetch-cover view model))
-  (appkit-invalidate view :structure t :part 'details :position t)
-  (appkit-sync-invalidations view)
-  (unless (plist-get (bili-detail--state view) :loaded-p)
-    (bili-detail--start-request view 'initial)))
+(defun bili-detail--app-succeeded (model input entity)
+  "Commit detail ENTITY into App MODEL and reply using INPUT."
+  (pcase-let ((`(,token ,kind ,id ,route) input))
+    (condition-case condition
+        (let (next canonical-id selected-cid live-status)
+          (pcase kind
+            ('video
+             (unless (and (bili-video-p entity)
+                          (equal (bili-video-bvid entity) id))
+               (error "Bilibili returned another video"))
+             (setq next (bili-core--put-video model entity)
+                   canonical-id (bili-video-bvid entity)
+                   selected-cid (bili-video-cid entity)))
+            ('live
+             (unless (bili-live-room-p entity)
+               (error "Bilibili returned an invalid live room"))
+             (setq next (bili-core--put-room model entity)
+                   canonical-id (bili-live-room-id entity)
+                   live-status (bili-live-room-live-status entity)))
+            (_ (error "Unsupported Bilibili detail kind")))
+          (appkit-next
+           :model next
+           :render appkit-render-none
+           :commands
+           (list
+            (bili-detail--reply-command
+             route
+             (list 'detail 'succeeded token kind canonical-id
+                   selected-cid live-status)))))
+      (error
+       (appkit-next
+        :model model
+        :render appkit-render-none
+        :commands
+        (list
+         (bili-detail--reply-command
+          route
+          (list 'detail 'failed token
+                (error-message-string condition)))))))))
 
-(defun bili-detail--open (kind id &optional model)
-  "Open canonical detail KIND and ID, optionally seeded with MODEL."
+(defun bili-detail--app-update (context model message)
+  "Advance canonical detail state in MODEL for MESSAGE."
+  (pcase message
+    (`(detail request ,token ,kind ,id)
+     (if (and token (memq kind '(video live)))
+         (appkit-next
+          :model model
+          :render appkit-render-none
+          :commands
+          (list
+           (appkit-command-start-effect
+            (bili-detail--metadata-effect
+             context token kind id))))
+       (appkit-next-reject "Invalid Bilibili detail request")))
+    (`(detail transport-succeeded ,input ,entity)
+     (bili-detail--app-succeeded model input entity))
+    (`(detail transport-failed
+       (,token ,_kind ,_id ,route) ,reason)
+     (appkit-next
+      :model model
+      :render appkit-render-none
+      :commands
+      (list
+       (bili-detail--reply-command
+        route (list 'detail 'failed token reason)))))
+    (_ (appkit-next-reject
+        (format "Unsupported Bilibili detail message: %S" message)))))
+
+(defun bili-detail--request-command (context state token)
+  "Return command requesting STATE's entity from its App."
+  (appkit-command-post-message
+   :target (appkit-transition-context-parent-address context)
+   :message
+   (list 'detail 'request token
+         (plist-get state :kind) (plist-get state :id))
+   :delivery 'report
+   :reply-correlation token))
+
+(defun bili-detail--surface-init (context input)
+  "Initialize one detail Surface from INPUT."
+  (let ((state (copy-sequence (bili-detail--state input))))
+    (if (plist-get state :loaded-p)
+        (appkit-next
+         :model state :render (bili-detail--render-change 'first))
+      (let ((token (make-symbol "bili-detail-request-")))
+        (setf (plist-get state :request-token) token)
+        (appkit-next
+         :model state
+         :render (bili-detail--render-change 'first)
+         :commands
+         (list
+          (bili-detail--request-command context state token)))))))
+
+(defun bili-detail--surface-request (context state)
+  "Transition detail STATE into a metadata refresh."
+  (let ((next (copy-sequence state))
+        (token (make-symbol "bili-detail-request-")))
+    (setf (plist-get next :phase)
+          (if (plist-get state :loaded-p) 'refresh 'initial)
+          (plist-get next :message) nil
+          (plist-get next :request-token) token)
+    (appkit-next
+     :model next
+     :render (bili-detail--render-change)
+     :commands
+     (list (bili-detail--request-command context next token)))))
+
+(defun bili-detail--surface-succeeded
+    (state token kind id selected-cid live-status)
+  "Install accepted detail response in STATE."
+  (if (not (eq token (plist-get state :request-token)))
+      (appkit-next :model state :render appkit-render-none)
+    (let ((next (copy-sequence state)))
+      (setf (plist-get next :kind) kind
+            (plist-get next :id) id
+            (plist-get next :phase) 'ready
+            (plist-get next :message) nil
+            (plist-get next :loaded-p) t
+            (plist-get next :request-token) nil)
+      (when (and selected-cid
+                 (null (plist-get next :selected-cid)))
+        (setf (plist-get next :selected-cid) selected-cid))
+      (appkit-next
+       :model next
+       :render
+       (bili-detail--render-change
+        (if (and (eq kind 'live) (not (= live-status 1)))
+            '(title)
+          '(action play)))))))
+
+(defun bili-detail--surface-failed (state token reason)
+  "Install detail failure REASON when TOKEN remains current."
+  (if (not (eq token (plist-get state :request-token)))
+      (appkit-next :model state :render appkit-render-none)
+    (let ((next (copy-sequence state)))
+      (setf (plist-get next :phase) 'error
+            (plist-get next :message) reason
+            (plist-get next :request-token) nil)
+      (appkit-next
+       :model next :render (bili-detail--render-change)))))
+
+(defun bili-detail--playback-effect (surface app-read-view state page)
+  "Return playback Effect for SURFACE's canonical detail entity."
+  (let* ((entity (bili-detail--model app-read-view state))
+         (selected
+          (and (bili-video-p entity)
+               (or page (bili-detail--selected-page entity state)))))
+    (unless entity
+      (user-error "Bilibili detail has not loaded"))
+    (when (and (bili-live-room-p entity)
+               (/= (bili-live-room-live-status entity) 1))
+      (user-error "This live room has no supported live stream"))
+    (appkit-effect-create
+     :key bili-detail--playback-request-key
+     :input
+     (if (bili-video-p entity)
+         (list (appkit-surface-app surface) entity selected)
+       (list (appkit-surface-app surface) entity))
+     :start
+     (if (bili-video-p entity)
+         #'bili-playback--video-effect-start
+       #'bili-playback--live-effect-start)
+     :success (lambda (_input _buffer) '(playback succeeded))
+     :failure
+     (lambda (_input reason)
+       (list 'playback 'failed (format "%s" reason)))
+     :cancellation-requirement 'transport)))
+
+(defun bili-detail--surface-play (context state page)
+  "Start PAGE playback from detail STATE."
+  (let* ((surface (or (bili-detail--current-surface)
+                      (error "Detail playback lacks its Surface")))
+         (app-read-view
+          (appkit-transition-context-app-read-view context))
+         (next (copy-sequence state))
+         (selected
+          (and page (bili-video-page-cid page))))
+    (when selected
+      (setf (plist-get next :selected-cid) selected))
+    (setf (plist-get next :playback-phase) 'resolving
+          (plist-get next :playback-message) nil)
+    (appkit-next
+     :model next
+     :render (bili-detail--render-change)
+     :commands
+     (list
+      (appkit-command-start-effect
+       (bili-detail--playback-effect
+        surface app-read-view next page))))))
+
+(defun bili-detail--surface-update (context state message)
+  "Advance detail Surface STATE for MESSAGE."
+  (pcase message
+    ('refresh (bili-detail--surface-request context state))
+    (`(detail succeeded ,token ,kind ,id ,selected-cid ,live-status)
+     (bili-detail--surface-succeeded
+      state token kind id selected-cid live-status))
+    (`(detail failed ,token ,reason)
+     (bili-detail--surface-failed state token reason))
+    (`(play ,page)
+     (bili-detail--surface-play context state page))
+    ('(playback succeeded)
+     (let ((next (copy-sequence state)))
+       (setf (plist-get next :playback-phase) 'idle
+             (plist-get next :playback-message) nil)
+       (appkit-next
+        :model next :render (bili-detail--render-change))))
+    (`(playback failed ,reason)
+     (let ((next (copy-sequence state)))
+       (setf (plist-get next :playback-phase) 'error
+             (plist-get next :playback-message) reason)
+       (appkit-next
+        :model next :render (bili-detail--render-change))))
+    (`(select-page ,cid)
+     (let ((next (copy-sequence state)))
+       (setf (plist-get next :selected-cid) cid)
+       (appkit-next
+        :model next
+        :render (bili-detail--render-change (list 'page cid)))))
+    ('geometry
+     (appkit-next
+      :model state
+      :render (appkit-projection-change-create :geometry-p t)))
+    (_ (appkit-next-reject
+        (format "Unsupported Bilibili detail Surface message: %S"
+                message)))))
+
+(defun bili-detail--setup (surface)
+  "Install responsive geometry for detail SURFACE."
+  (appkit-surface-enable-responsive-geometry
+   surface
+   (lambda (owner _width)
+     (when (appkit-surface-live-p owner)
+       (appkit-surface-post owner 'geometry))))
+  (with-current-buffer (appkit-surface-buffer surface)
+    (appkit-surface-refresh-responsive-geometry surface)))
+
+(defconst bili-detail--surface-type
+  (appkit-surface-type-create
+   :name 'bili-detail
+   :mode #'bili-detail-mode
+   :init #'bili-detail--surface-init
+   :update #'bili-detail--surface-update
+   :renderer-factory
+   (lambda (_surface)
+     (appkit-projection-renderer-create
+      :project-all #'bili-detail--rows
+      :printer #'bili-detail--print-row
+      :anchor-property bili-detail-row-key-property
+      :geometry-mode 'reproject
+      :no-separator-p t)))
+  "Generated Surface type for Bilibili entity details.")
+
+(defun bili-detail--open (kind id)
+  "Open or select the canonical detail Surface for KIND and ID."
   (let* ((app (bili-core-app))
-         (view-id (list 'detail kind id))
-         (existing (appkit-view-for-id app view-id))
-         (state (or (and existing (appkit-view-state existing))
-                    (bili-detail--new-state kind id model))))
-    (when model
-      (pcase kind
-        ('video (bili-core-store-video app model))
-        ('live (bili-core-store-room app model)))
-      (setf (plist-get state :phase) 'ready
-            (plist-get state :message) nil
-            (plist-get state :loaded-p) t))
-    (appkit-open-view
-     :app app :id view-id :mode #'bili-detail-mode
-     :buffer-name (format "*Bilibili %s: %s*" kind id)
-     :state state :sync-function #'bili-detail--sync
-     :parts '(details) :position-policy 'semantic
-     :setup #'bili-detail--setup :select t)))
+         (surface-id (list 'detail kind id))
+         (existing (appkit-app-surface app surface-id)))
+    (if (appkit-surface-live-p existing)
+        (progn
+          (pop-to-buffer (appkit-surface-buffer existing))
+          existing)
+      (let* ((cached
+              (pcase kind
+                ('video (bili-core-video app id))
+                ('live (bili-core-room app id))))
+             (surface
+              (appkit-open-generated-surface
+               bili-detail--surface-type
+               :app app :identity surface-id
+               :input (bili-detail--new-state kind id cached)
+               :buffer-name (format "*Bilibili %s: %s*" kind id)
+               :select t)))
+        (bili-detail--setup surface)
+        surface))))
 
 (defun bili-detail-open-video (bvid)
   "Open Bilibili video BVID details."
-  (bili-detail--open 'video bvid (bili-core-video (bili-core-app) bvid)))
+  (bili-detail--open 'video bvid))
 
 (defun bili-detail-open-live-room (room-id)
-  "Resolve ROOM-ID, then open one canonical live-room detail view."
+  "Open Bilibili live-room ROOM-ID details."
   (unless (and (integerp room-id) (> room-id 0))
     (error "Bilibili live room id must be positive"))
-  (let* ((app (bili-core-app))
-         (cached (bili-core-room app room-id)))
-    (if cached
-        (bili-detail--open 'live (bili-live-room-id cached) cached)
-      (message "Resolving Bilibili live room %s..." room-id)
-      (bili-live-resolve-room
-       room-id
-       (lambda (room)
-         (when (appkit-app-live-p app)
-           (bili-detail--open 'live (bili-live-room-id room) room)))
-       :errback (lambda (message) (message "%s" message))
-       :owner app))))
+  (bili-detail--open 'live room-id))
 
 (defun bili-detail-refresh ()
-  "Refresh the current Bilibili detail view."
+  "Refresh the current Bilibili detail Surface."
   (interactive)
-  (if-let* ((view (bili-detail--current-view)))
-      (bili-detail--start-request view 'refresh)
+  (if-let* ((surface (bili-detail--current-surface)))
+      (appkit-surface-send surface 'refresh)
     (user-error "Current buffer is not a Bilibili detail view")))
-
 
 (defun bili-detail--selected-page (video state)
   "Return VIDEO page selected by detail STATE."
@@ -589,52 +786,19 @@
        (bili-video-pages video))
       (car (bili-video-pages video))))
 
-(defun bili-detail--start-playback (view &optional page)
-  "Start playback from VIEW, optionally selecting video PAGE."
-  (let* ((state (bili-detail--state view))
-         (model (bili-detail--model view state))
-         operation)
-    (unless model
-      (user-error "Bilibili detail has not loaded"))
-    (when (and (bili-live-room-p model)
-               (/= (bili-live-room-live-status model) 1))
-      (user-error "This live room has no supported live stream"))
-    (when page
-      (setf (plist-get state :selected-cid) (bili-video-page-cid page)))
-    (setq operation
-          (appkit-view-operation-begin
-           view bili-detail--playback-request-key))
-    (setf (plist-get state :playback-phase) 'resolving
-          (plist-get state :playback-message) nil)
-    (appkit-request-sync view :part 'details :entry '(action play) :position t)
-    (cl-labels
-        ((success
-          (_buffer)
-          (when (appkit-view-operation-finish operation)
-            (setf (plist-get state :playback-phase) 'idle
-                  (plist-get state :playback-message) nil)
-            (appkit-request-sync view :part 'details :position t)))
-         (failure
-          (message)
-          (when (appkit-view-operation-finish operation)
-            (setf (plist-get state :playback-phase) 'error
-                  (plist-get state :playback-message) message)
-            (appkit-request-sync view :part 'details :position t))))
-      (if (bili-video-p model)
-          (bili-playback-video
-           model operation
-           :page (or page (bili-detail--selected-page model state))
-           :callback #'success :errback #'failure)
-        (bili-playback-live
-         model operation :callback #'success :errback #'failure)))))
+(defun bili-detail--start-playback (surface &optional page)
+  "Start playback from SURFACE, optionally selecting video PAGE."
+  (appkit-surface-send surface (list 'play page)))
 
 (defun bili-detail-open-comments ()
   "Open the read-only comment stream for the current video detail."
   (interactive)
-  (let* ((view (or (bili-detail--current-view)
-                   (user-error "Current buffer is not a Bilibili detail view")))
-         (state (bili-detail--state view))
-         (video (bili-detail--model view state)))
+  (let* ((surface
+          (or (bili-detail--current-surface)
+              (user-error "Current buffer is not a Bilibili detail view")))
+         (state (bili-detail--state surface))
+         (video
+          (bili-detail--model (appkit-surface-app surface) state)))
     (unless (bili-video-p video)
       (user-error "Current detail is not a video"))
     (bili-comment-open video)))
@@ -642,23 +806,27 @@
 (defun bili-detail-play ()
   "Play the current Bilibili detail or selected video part."
   (interactive)
-  (let ((view (or (bili-detail--current-view)
-                  (user-error "Current buffer is not a Bilibili detail view"))))
-    (bili-detail--start-playback view)))
+  (let ((surface
+         (or (bili-detail--current-surface)
+             (user-error "Current buffer is not a Bilibili detail view"))))
+    (bili-detail--start-playback surface)))
 
 (defun bili-detail--play-page-action (page)
   "Play video PAGE from the current detail view."
-  (let ((view (or (bili-detail--current-view)
-                  (user-error "Current buffer is not a Bilibili detail view"))))
-    (bili-detail--start-playback view page)))
+  (let ((surface
+         (or (bili-detail--current-surface)
+             (user-error "Current buffer is not a Bilibili detail view"))))
+    (bili-detail--start-playback surface page)))
 
 (defun bili-detail-select-page ()
   "Select a video part in the current detail view without playing it."
   (interactive)
-  (let* ((view (or (bili-detail--current-view)
-                   (user-error "Current buffer is not a Bilibili detail view")))
-         (state (bili-detail--state view))
-         (video (bili-detail--model view state)))
+  (let* ((surface
+          (or (bili-detail--current-surface)
+              (user-error "Current buffer is not a Bilibili detail view")))
+         (state (bili-detail--state surface))
+         (video
+          (bili-detail--model (appkit-surface-app surface) state)))
     (unless (bili-video-p video)
       (user-error "Current detail is not a video"))
     (let* ((pages (bili-video-pages video))
@@ -671,10 +839,8 @@
                     pages))
            (page (cdr (assoc (completing-read "Part: " choices nil t)
                              choices))))
-      (setf (plist-get state :selected-cid) (bili-video-page-cid page)
-            (plist-get state :position-intent)
-            (list 'page (bili-video-page-cid page)))
-      (appkit-request-sync view :part 'details :position t))))
+      (appkit-surface-send
+       surface (list 'select-page (bili-video-page-cid page))))))
 
 (defun bili-detail-activate ()
   "Activate the detail action at point."
@@ -702,9 +868,10 @@
 (defun bili-detail-open-in-browser ()
   "Open the current Bilibili entity in the system browser."
   (interactive)
-  (let* ((view (or (bili-detail--current-view)
-                   (user-error "Current buffer is not a Bilibili detail view")))
-         (state (bili-detail--state view)))
+  (let* ((surface
+          (or (bili-detail--current-surface)
+              (user-error "Current buffer is not a Bilibili detail view")))
+         (state (bili-detail--state surface)))
     (browse-url
      (pcase (plist-get state :kind)
        ('video (format "https://www.bilibili.com/video/%s"

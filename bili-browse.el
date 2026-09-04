@@ -5,18 +5,20 @@
 
 ;;; Commentary:
 
-;; Own catalog view state, Appkit operation slots, rich-card projections,
-;; endpoint-aware pagination, and resource navigation.
+;; Own catalog Surface state, rich-card projections, endpoint-aware
+;; pagination, and declarative App effects and Resource demands.
 
 ;;; Code:
 
 (require 'cl-lib)
 (require 'seq)
 (require 'subr-x)
-(require 'appkit-core)
-(require 'appkit-invalidation)
+(require 'appkit-command)
+(require 'appkit-effect)
 (require 'appkit-projection)
+(require 'appkit-resource)
 (require 'appkit-scroll)
+(require 'appkit-surface)
 (require 'appkit-ui)
 (require 'bili-api)
 (require 'bili-auth)
@@ -46,7 +48,7 @@ Set this to nil to disable automatic pagination."
   :group 'bili)
 
 (defconst bili-browse--catalog-request-key 'catalog
-  "View request-table key for a catalog page request.")
+  "App Effect key prefix for catalog page requests.")
 
 (defconst bili-browse-item-key-property 'bili-item-key
   "Text property carrying a canonical Bilibili catalog key.")
@@ -83,9 +85,11 @@ Set this to nil to disable automatic pagination."
               truncate-lines t
               header-line-format '(:eval (bili-browse--header-line))))
 
-(defun bili-browse--catalog-state (view)
-  "Return validated catalog state owned by VIEW."
-  (let ((state (and (appkit-view-p view) (appkit-view-state view))))
+(defun bili-browse--catalog-state (owner)
+  "Return validated catalog state from OWNER."
+  (let ((state (if (appkit-surface-p owner)
+                   (appkit-surface-model owner)
+                 owner)))
     (unless (and (listp state)
                  (eq (plist-get state :type) 'catalog)
                  (memq (plist-get state :kind)
@@ -95,18 +99,18 @@ Set this to nil to disable automatic pagination."
       (error "Invalid Bilibili catalog state"))
     state))
 
-(defun bili-browse--current-catalog-view ()
-  "Return the current live Bilibili catalog view, or nil."
-  (when-let* ((view (appkit-current-view))
-              ((appkit-view-live-p view))
-              (state (appkit-view-state view))
+(defun bili-browse--current-catalog-surface ()
+  "Return the current live Bilibili catalog Surface, or nil."
+  (when-let* ((surface (appkit-current-surface))
+              ((appkit-surface-live-p surface))
+              (state (appkit-surface-model surface))
               ((eq (plist-get state :type) 'catalog)))
-    view))
+    surface))
 
 (defun bili-browse--header-line ()
   "Return the persistent header line for the current catalog."
-  (if-let* ((view (bili-browse--current-catalog-view))
-            (state (bili-browse--catalog-state view)))
+  (if-let* ((surface (bili-browse--current-catalog-surface))
+            (state (bili-browse--catalog-state surface)))
       (format " Bilibili · %s · %d items%s"
               (pcase (plist-get state :kind)
                 ('home "Popular")
@@ -157,20 +161,19 @@ Set this to nil to disable automatic pagination."
         (push key result)))))
 (defun bili-browse--projection-row (key type &rest properties)
   "Return one catalog projection row with KEY, TYPE, and PROPERTIES."
-  (let ((dependencies (plist-get properties :dependencies)))
-    (appkit-projection-row-create
-     :key key
-     :payload (append (list :type type) properties)
-     :dependencies dependencies)))
+  (appkit-projection-row-create
+   :key key
+   :payload (append (list :type type) properties)
+   :dependencies (plist-get properties :dependencies)
+   :resource-demands (plist-get properties :resource-demands)))
 
 (defun bili-browse--search-action ()
   "Prompt for a replacement Bilibili catalog search."
   (call-interactively #'bili-browse-search))
 
-(defun bili-browse--catalog-project (view state)
-  "Project catalog STATE for VIEW into stable Appkit rows."
-  (let* ((app (appkit-view-app view))
-         (kind (plist-get state :kind))
+(defun bili-browse--catalog-project (_surface app-read-view state)
+  "Project catalog STATE against APP-READ-VIEW into stable rows."
+  (let* ((kind (plist-get state :kind))
          (section-key (list 'catalog kind (plist-get state :query)))
          (phase (plist-get state :phase))
          (items (plist-get state :items))
@@ -193,15 +196,18 @@ Set this to nil to disable automatic pagination."
         :text "Retry" :action #'bili-browse-retry)
        rows))
     (dolist (key items)
-      (when-let* ((item (bili-core-catalog-item app key)))
-        (bili-cover-prefetch app key (bili-catalog-item-cover item))
-        (push
-         (bili-browse--projection-row
-          key 'item :entity-key key
-          :dependencies
-          (list (list 'catalog key)
-                (bili-cover-resource-key key)))
-         rows)))
+      (when-let* ((item (bili-core-catalog-item app-read-view key)))
+        (let* ((cover (bili-catalog-item-cover item))
+               (demand (bili-cover-demand key cover))
+               (resource-key
+                (and demand (appkit-resource-demand-key demand))))
+          (push
+           (bili-browse--projection-row
+            key 'item :entity-key key
+            :dependencies
+            (delq nil (list (list 'catalog key) resource-key))
+            :resource-demands (and demand (list demand)))
+           rows))))
     (unless (or items (memq phase '(initial refresh error)))
       (push
        (bili-browse--projection-row
@@ -221,11 +227,12 @@ Set this to nil to disable automatic pagination."
        rows))
     (nreverse rows)))
 
-(defun bili-browse--open-catalog-key (view key)
-  "Open canonical catalog KEY owned by VIEW."
-  (unless (appkit-view-live-p view)
-    (user-error "Bilibili catalog view is no longer live"))
-  (let ((item (bili-core-catalog-item (appkit-view-app view) key)))
+(defun bili-browse--open-catalog-key (surface key)
+  "Open canonical catalog KEY owned by SURFACE."
+  (unless (appkit-surface-live-p surface)
+    (user-error "Bilibili catalog Surface is no longer live"))
+  (let ((item (bili-core-catalog-item
+               (appkit-surface-app surface) key)))
     (unless (bili-catalog-item-p item)
       (error "Bilibili catalog item is unavailable"))
     (pcase (bili-catalog-item-kind item)
@@ -233,11 +240,10 @@ Set this to nil to disable automatic pagination."
       ('live (bili-detail-open-live-room (bili-catalog-item-id item)))
       (_ (error "Unsupported Bilibili catalog item")))))
 
-(defun bili-browse--print-catalog-row (projection-row)
-  "Render one catalog PROJECTION-ROW."
-  (let* ((view (or (bili-browse--current-catalog-view)
-                   (error "No live Bilibili catalog view")))
-         (entry (appkit-projection-row-payload projection-row))
+(defun bili-browse--print-catalog-row
+    (surface app-read-view projection-row)
+  "Render PROJECTION-ROW for SURFACE against APP-READ-VIEW."
+  (let* ((entry (appkit-projection-row-payload projection-row))
          (type (plist-get entry :type))
          (text (plist-get entry :text)))
     (pcase type
@@ -255,35 +261,23 @@ Set this to nil to disable automatic pagination."
        (insert "\n"))
       ('item
        (bili-render-insert-catalog-card
-        view (plist-get entry :entity-key)))
+        surface app-read-view (plist-get entry :entity-key)))
       (_ (error "Unknown Bilibili catalog row type: %S" type)))))
 
-(defun bili-browse--catalog-sync (view invalidations _events)
-  "Synchronize catalog VIEW from INVALIDATIONS."
-  (let* ((state (bili-browse--catalog-state view))
-         (position (or (plist-get state :position-intent) 'preserve)))
-    (setf (plist-get state :position-intent) nil)
-    (with-current-buffer (appkit-view-buffer view)
-      (appkit-projection-sync-invalidations
-          view invalidations (bili-browse--catalog-project view state)
-        :reconcile-parts '(catalog)
-        :position position)
-      (force-mode-line-update)
-      (when (appkit-scroll-observer-p bili-browse--scroll-observer)
-        (appkit-scroll-observer-check bili-browse--scroll-observer)))))
 
 (defun bili-browse-activate ()
   "Open the Bilibili catalog card at point."
   (interactive)
-  (let* ((view (or (bili-browse--current-catalog-view)
-                   (user-error "Current buffer is not a Bilibili catalog")))
+  (let* ((surface
+          (or (bili-browse--current-catalog-surface)
+              (user-error "Current buffer is not a Bilibili catalog")))
          (key (or (get-text-property (point) bili-browse-item-key-property)
                   (and (> (point) (point-min))
                        (get-text-property
                         (1- (point)) bili-browse-item-key-property)))))
     (unless key
       (user-error "No Bilibili item at point"))
-    (bili-browse--open-catalog-key view key)))
+    (bili-browse--open-catalog-key surface key)))
 
 (defun bili-browse--item-starts ()
   "Return ordered buffer positions at the start of every catalog card."
@@ -325,28 +319,16 @@ Set this to nil to disable automatic pagination."
   (bili-browse--move-item (- (or count 1))))
 
 
-(defun bili-browse--catalog-failed
-    (view state phase message &optional quiet)
-  "Install catalog failure MESSAGE for PHASE in VIEW and STATE.
+(defun bili-browse--render-change (&optional position)
+  "Return a full catalog render request restoring POSITION."
+  (appkit-projection-change-create
+   :full-p t :frame-p t :position (or position 'preserve)))
 
-When QUIET is non-nil, keep the failure in the view without echo-area noise."
-  (setf (plist-get state :phase) 'error
-        (plist-get state :failed-phase) phase
-        (plist-get state :message) message)
-  (appkit-request-sync view :structure t :part 'catalog :position t)
-  (unless quiet
-    (message "%s" message)))
-
-(defun bili-browse--catalog-exhausted-p
-    (state data models new-keys phase page)
-  "Return whether catalog STATE reached its endpoint-specific end.
-
-DATA is the provider page, MODELS its normalized items, NEW-KEYS the keys not
-already visible, PHASE the request phase, and PAGE the accepted page number."
+(defun bili-browse--provider-exhausted-p (kind data models page)
+  "Return whether KIND's provider DATA is exhausted at PAGE."
   (or
    (null models)
-   (and (eq phase 'older) (null new-keys))
-   (pcase (plist-get state :kind)
+   (pcase kind
      ('home (eq (alist-get 'no_more data) t))
      ('recommended nil)
      ('search
@@ -355,156 +337,303 @@ already visible, PHASE the request phase, and PAGE the accepted page number."
      ('live nil)
      (_ t))))
 
-(defun bili-browse--catalog-record-pagination (state data page)
-  "Record endpoint pagination metadata from DATA at PAGE in STATE."
-  (setf (plist-get state :total-items)
-        (and (eq (plist-get state :kind) 'search)
-             (bili-model--number (alist-get 'numResults data)))
-        (plist-get state :total-pages)
-        (and (eq (plist-get state :kind) 'search)
-             (bili-model--number (alist-get 'numPages data)))
-        (plist-get state :page) page))
-
-(defun bili-browse--catalog-succeeded
-    (view state phase page data &optional quiet)
-  "Install catalog DATA for PAGE and PHASE in VIEW and STATE.
-
-QUIET suppresses echo-area reporting if response adaptation fails."
-  (condition-case error-data
-      (let* ((models (bili-browse--catalog-item-list state data))
-             (app (appkit-view-app view))
-             (keys (bili-core-store-catalog-items app models))
-             (current (plist-get state :items))
-             (new (if (eq phase 'older)
-                      (bili-browse--new-keys current keys)
-                    keys)))
-        (dolist (model models)
-          (bili-cover-prefetch
-           app
-           (list (bili-catalog-item-kind model)
-                 (bili-catalog-item-id model))
-           (bili-catalog-item-cover model)))
-        (bili-browse--catalog-record-pagination state data page)
-        (setf (plist-get state :items)
-              (if (eq phase 'older) (append current new) keys)
-              (plist-get state :phase) 'ready
-              (plist-get state :failed-phase) nil
-              (plist-get state :message) nil
-              (plist-get state :loaded-p) t
-              (plist-get state :position-intent)
-              (and (eq phase 'initial) 'first)
-              (plist-get state :exhausted-p)
-              (bili-browse--catalog-exhausted-p
-               state data models new phase page))
-        (appkit-request-sync
-         view :structure t :part 'catalog :position t))
-    (error
-     (bili-browse--catalog-failed
-      view state phase (error-message-string error-data) quiet))))
-
 (defun bili-browse--dispatch-catalog
-    (owner state page success failure)
-  "Dispatch STATE's PAGE under OWNER using SUCCESS and FAILURE callbacks."
-  (pcase (plist-get state :kind)
+    (kind query page success failure)
+  "Dispatch KIND and QUERY at PAGE through SUCCESS or FAILURE."
+  (pcase kind
     ('home
      (bili-api-popular
       page success :page-size bili-browse-page-size
-      :errback failure :owner owner))
+      :errback failure :owner bili-api--effect-owner))
     ('recommended
      (bili-api-recommended-feed
       page success :page-size bili-browse-recommended-page-size
-      :errback failure :owner owner))
+      :errback failure :owner bili-api--effect-owner))
     ('search
      (bili-api-search-videos
-      (plist-get state :query) page success
-      :page-size bili-browse-page-size :errback failure :owner owner))
+      query page success :page-size bili-browse-page-size
+      :errback failure :owner bili-api--effect-owner))
     ('live
-     (bili-api-live-list page success :errback failure :owner owner))
+     (bili-api-live-list
+      page success :errback failure :owner bili-api--effect-owner))
     (_ (error "Unsupported Bilibili catalog kind"))))
 
-(defun bili-browse--catalog-request (view phase &optional quiet)
-  "Start catalog VIEW request for PHASE.
+(defun bili-browse--catalog-effect
+    (context token kind query phase page)
+  "Return App Effect serving one catalog request from CONTEXT."
+  (let ((source (appkit-transition-context-source-address context))
+        (route (appkit-transition-context-reply-route context)))
+    (unless (and source route)
+      (error "Catalog request lacks a live Surface reply route"))
+    (appkit-effect-create
+     :key (list bili-browse--catalog-request-key source)
+     :input (list token kind query phase page route)
+     :start
+     (lambda (_effect-context input _observe resolve reject)
+       (pcase-let ((`(,_token ,request-kind ,request-query
+                                ,_phase ,request-page ,_route)
+                    input))
+         (bili-api-effect-cancellation
+          (bili-browse--dispatch-catalog
+           request-kind request-query request-page resolve reject))))
+     :success
+     (lambda (input data)
+       (list 'catalog 'transport-succeeded input data))
+     :failure
+     (lambda (input reason)
+       (list 'catalog 'transport-failed input (format "%s" reason)))
+     :cancellation-requirement 'transport)))
 
-QUIET suppresses echo-area messages for automatic pagination."
+(defun bili-browse--reply-command (route message)
+  "Return a report-delivery command sending MESSAGE to ROUTE."
+  (appkit-command-post-message
+   :target route :message message :delivery 'report))
+
+(defun bili-browse--app-succeeded (model input data)
+  "Commit catalog DATA into App MODEL and reply using INPUT."
+  (pcase-let ((`(,token ,kind ,query ,phase ,page ,route) input))
+    (condition-case condition
+        (let* ((state (list :kind kind :query query))
+               (models (bili-browse--catalog-item-list state data))
+               (stored (bili-core--put-catalog-items model models))
+               (next-model (car stored))
+               (keys (cdr stored))
+               (metadata
+                (list
+                 :total-items
+                 (and (eq kind 'search)
+                      (bili-model--number (alist-get 'numResults data)))
+                 :total-pages
+                 (and (eq kind 'search)
+                      (bili-model--number (alist-get 'numPages data)))
+                 :provider-exhausted
+                 (bili-browse--provider-exhausted-p
+                  kind data models page))))
+          (appkit-next
+           :model next-model
+           :render appkit-render-none
+           :commands
+           (list
+            (bili-browse--reply-command
+             route
+             (list 'catalog 'succeeded token phase page keys metadata)))))
+      (error
+       (appkit-next
+        :model model
+        :render appkit-render-none
+        :commands
+        (list
+         (bili-browse--reply-command
+          route
+          (list 'catalog 'failed token phase
+                (error-message-string condition)))))))))
+
+(defun bili-browse--app-update (context model message)
+  "Advance canonical catalog state in MODEL for MESSAGE."
+  (pcase message
+    (`(catalog request ,token ,kind ,query ,phase ,page)
+     (if (and token
+              (memq kind '(home recommended search live))
+              (memq phase '(initial refresh older))
+              (integerp page) (> page 0))
+         (appkit-next
+          :model model
+          :render appkit-render-none
+          :commands
+          (list
+           (appkit-command-start-effect
+            (bili-browse--catalog-effect
+             context token kind query phase page))))
+       (appkit-next-reject "Invalid Bilibili catalog request")))
+    (`(catalog transport-succeeded ,input ,data)
+     (bili-browse--app-succeeded model input data))
+    (`(catalog transport-failed
+       (,token ,_kind ,_query ,phase ,_page ,route) ,reason)
+     (appkit-next
+      :model model
+      :render appkit-render-none
+      :commands
+      (list
+       (bili-browse--reply-command
+        route (list 'catalog 'failed token phase reason)))))
+    (_ (appkit-next-reject
+        (format "Unsupported Bilibili catalog message: %S" message)))))
+
+(defun bili-browse--request-command (context state phase token page)
+  "Return command requesting STATE's PAGE and PHASE from its App."
+  (appkit-command-post-message
+   :target (appkit-transition-context-parent-address context)
+   :message
+   (list 'catalog 'request token
+         (plist-get state :kind) (plist-get state :query)
+         phase page)
+   :delivery 'report
+   :reply-correlation token))
+
+(defun bili-browse--surface-init (context input)
+  "Initialize a catalog Surface from INPUT."
+  (let* ((state (copy-sequence (bili-browse--catalog-state input)))
+         (token (make-symbol "bili-catalog-request-")))
+    (setf (plist-get state :request-token) token)
+    (appkit-next
+     :model state
+     :render (bili-browse--render-change 'first)
+     :commands
+     (list
+      (bili-browse--request-command context state 'initial token 1)))))
+
+(defun bili-browse--surface-request (context state phase)
+  "Transition catalog STATE into request PHASE."
   (unless (memq phase '(initial refresh older))
     (error "Invalid Bilibili catalog request phase: %S" phase))
-  (let ((state (bili-browse--catalog-state view)))
-    (when (and (eq phase 'older) (plist-get state :exhausted-p))
-      (user-error "No more Bilibili results"))
-    (let* ((page (if (eq phase 'older)
+  (if (and (eq phase 'older) (plist-get state :exhausted-p))
+      (appkit-next-reject "No more Bilibili results")
+    (let* ((next (copy-sequence state))
+           (page (if (eq phase 'older)
                      (1+ (plist-get state :page))
                    1))
-           (operation
-            (appkit-view-operation-begin
-             view bili-browse--catalog-request-key)))
-      (setf (plist-get state :phase) phase
-            (plist-get state :failed-phase) nil
-            (plist-get state :message) nil)
-      (appkit-request-sync view :structure t :part 'catalog :position t)
-      (bili-browse--dispatch-catalog
-       operation state page
-       (lambda (data)
-         (when (appkit-view-operation-finish operation)
-           (bili-browse--catalog-succeeded
-            view state phase page data quiet)))
-       (lambda (message)
-         (when (appkit-view-operation-finish operation)
-           (bili-browse--catalog-failed
-            view state phase message quiet)))))))
+           (token (make-symbol "bili-catalog-request-")))
+      (setf (plist-get next :phase) phase
+            (plist-get next :failed-phase) nil
+            (plist-get next :message) nil
+            (plist-get next :request-token) token)
+      (appkit-next
+       :model next
+       :render (bili-browse--render-change)
+       :commands
+       (list
+        (bili-browse--request-command
+         context next phase token page))))))
+
+(defun bili-browse--surface-succeeded
+    (state token phase page keys metadata)
+  "Install one catalog response in STATE when TOKEN remains current."
+  (if (not (eq token (plist-get state :request-token)))
+      (appkit-next :model state :render appkit-render-none)
+    (let* ((next (copy-sequence state))
+           (current (plist-get state :items))
+           (new (if (eq phase 'older)
+                    (bili-browse--new-keys current keys)
+                  keys)))
+      (setf (plist-get next :items)
+            (if (eq phase 'older) (append current new) keys)
+            (plist-get next :page) page
+            (plist-get next :total-items)
+            (plist-get metadata :total-items)
+            (plist-get next :total-pages)
+            (plist-get metadata :total-pages)
+            (plist-get next :phase) 'ready
+            (plist-get next :failed-phase) nil
+            (plist-get next :message) nil
+            (plist-get next :loaded-p) t
+            (plist-get next :request-token) nil
+            (plist-get next :exhausted-p)
+            (or (plist-get metadata :provider-exhausted)
+                (and (eq phase 'older) (null new))))
+      (appkit-next
+       :model next
+       :render
+       (bili-browse--render-change
+        (and (eq phase 'initial) 'first))))))
+
+(defun bili-browse--surface-failed (state token phase reason)
+  "Install catalog failure REASON when TOKEN remains current."
+  (if (not (eq token (plist-get state :request-token)))
+      (appkit-next :model state :render appkit-render-none)
+    (let ((next (copy-sequence state)))
+      (setf (plist-get next :phase) 'error
+            (plist-get next :failed-phase) phase
+            (plist-get next :message) reason
+            (plist-get next :request-token) nil)
+      (appkit-next
+       :model next :render (bili-browse--render-change)))))
+
+(defun bili-browse--surface-update (context state message)
+  "Advance catalog Surface STATE for MESSAGE."
+  (pcase message
+    (`(request ,phase)
+     (bili-browse--surface-request context state phase))
+    (`(catalog succeeded ,token ,phase ,page ,keys ,metadata)
+     (bili-browse--surface-succeeded
+      state token phase page keys metadata))
+    (`(catalog failed ,token ,phase ,reason)
+     (bili-browse--surface-failed state token phase reason))
+    ('geometry
+     (appkit-next
+      :model state
+      :render (appkit-projection-change-create :geometry-p t)))
+    (_ (appkit-next-reject
+        (format "Unsupported Bilibili catalog Surface message: %S"
+                message)))))
 
 (defun bili-browse--maybe-auto-load
-    (view _window position end)
-  "Load VIEW's next page when visible POSITION approaches END."
-  (when (and (appkit-view-live-p view)
+    (surface _window position end)
+  "Request SURFACE's next page when visible POSITION approaches END."
+  (when (and (appkit-surface-live-p surface)
              (numberp bili-browse-auto-load-threshold)
              (appkit-scroll-near-end-p
               position end bili-browse-auto-load-threshold))
-    (let ((state (bili-browse--catalog-state view)))
+    (let ((state (bili-browse--catalog-state surface)))
       (when (and (plist-get state :loaded-p)
                  (eq (plist-get state :phase) 'ready)
                  (not (plist-get state :exhausted-p)))
-        (bili-browse--catalog-request view 'older t)))))
+        (appkit-surface-post surface '(request older))))))
 
-(defun bili-browse--install-scroll-observer (view)
-  "Install VIEW's lifecycle-owned automatic pagination observer."
-  (setq-local
-   bili-browse--scroll-observer
-   (appkit-scroll-observer-install
-    view
-    :end-function
-    (lambda (window position end)
-      (bili-browse--maybe-auto-load view window position end)))))
+(defun bili-browse--setup-catalog (surface)
+  "Install lifecycle-owned geometry and scroll observers for SURFACE."
+  (with-current-buffer (appkit-surface-buffer surface)
+    (appkit-surface-enable-responsive-geometry
+     surface
+     (lambda (owner _width)
+       (when (appkit-surface-live-p owner)
+         (appkit-surface-post owner 'geometry))))
+    (setq-local
+     bili-browse--scroll-observer
+     (appkit-scroll-observer-install
+      surface
+      :end-function
+      (lambda (window position end)
+        (bili-browse--maybe-auto-load
+         surface window position end))))
+    (appkit-surface-refresh-responsive-geometry surface)))
 
-(defun bili-browse--setup-catalog (view)
-  "Initialize catalog VIEW and start its first request."
-  (with-current-buffer (appkit-view-buffer view)
-    (appkit-projection-ensure
-     view :printer #'bili-browse--print-catalog-row
-     :anchor-property bili-browse-row-key-property
-     :no-separator-p t)
-    (appkit-view-enable-responsive-geometry view)
-    (bili-browse--install-scroll-observer view))
-  (appkit-invalidate view :structure t :part 'catalog :position t)
-  (appkit-sync-invalidations view)
-  (bili-browse--catalog-request view 'initial))
+(defconst bili-browse--surface-type
+  (appkit-surface-type-create
+   :name 'bili-catalog
+   :mode #'bili-browse-mode
+   :init #'bili-browse--surface-init
+   :update #'bili-browse--surface-update
+   :renderer-factory
+   (lambda (_surface)
+     (appkit-projection-renderer-create
+      :project-all #'bili-browse--catalog-project
+      :printer #'bili-browse--print-catalog-row
+      :anchor-property bili-browse-row-key-property
+      :geometry-mode 'reproject
+      :no-separator-p t)))
+  "Generated Surface type for Bilibili catalogs.")
+
+(defun bili-browse--catalog-request (surface phase)
+  "Synchronously request PHASE from catalog SURFACE."
+  (appkit-surface-send surface (list 'request phase)))
 
 (defun bili-browse-refresh ()
   "Refresh the current Bilibili catalog."
   (interactive)
-  (if-let* ((view (bili-browse--current-catalog-view)))
-      (let ((state (bili-browse--catalog-state view)))
+  (if-let* ((surface (bili-browse--current-catalog-surface)))
+      (let ((state (bili-browse--catalog-state surface)))
         (bili-browse--catalog-request
-         view (if (plist-get state :loaded-p) 'refresh 'initial)))
+         surface (if (plist-get state :loaded-p) 'refresh 'initial)))
     (user-error "Current buffer is not a Bilibili catalog")))
 
 (defun bili-browse-retry ()
   "Retry the failed operation in the current Bilibili catalog."
   (interactive)
-  (if-let* ((view (bili-browse--current-catalog-view))
-            (state (bili-browse--catalog-state view))
+  (if-let* ((surface (bili-browse--current-catalog-surface))
+            (state (bili-browse--catalog-state surface))
             ((eq (plist-get state :phase) 'error))
             (phase (plist-get state :failed-phase)))
-      (bili-browse--catalog-request view phase)
+      (bili-browse--catalog-request surface phase)
     (user-error "Current Bilibili catalog has no failed request")))
 
 (defun bili-browse--make-catalog-state (kind &optional query)
@@ -512,43 +641,38 @@ QUIET suppresses echo-area messages for automatic pagination."
   (list :type 'catalog :kind kind :query query :items nil :page 0
         :total-items nil :total-pages nil
         :phase 'initial :failed-phase nil :message nil
-        :loaded-p nil :exhausted-p nil :position-intent nil))
+        :loaded-p nil :exhausted-p nil :request-token nil))
 
 (defun bili-browse--open-catalog (id buffer-name state)
-  "Open catalog ID in BUFFER-NAME with STATE."
-  (let ((view
-         (appkit-open-view
-          :app (bili-core-app) :id id :mode #'bili-browse-mode
-          :buffer-name buffer-name :state state
-          :sync-function #'bili-browse--catalog-sync
-          :parts '(catalog geometry) :position-policy 'semantic
-          :setup #'bili-browse--setup-catalog :select t)))
-    (with-current-buffer (appkit-view-buffer view)
-      (appkit-view-refresh-responsive-geometry))
-    view))
+  "Open or select catalog Surface ID in BUFFER-NAME with STATE."
+  (let* ((app (bili-core-app))
+         (existing (appkit-app-surface app id)))
+    (if (appkit-surface-live-p existing)
+        (progn
+          (pop-to-buffer (appkit-surface-buffer existing))
+          existing)
+      (let ((surface
+             (appkit-open-generated-surface
+              bili-browse--surface-type
+              :app app :identity id :input state
+              :buffer-name buffer-name :select t)))
+        (bili-browse--setup-catalog surface)
+        surface))))
 
 (defun bili-browse-recommended ()
   "Open or reuse the logged-in account's personalized recommendation feed."
   (interactive)
   (bili-auth-credentials)
-  (let* ((app (bili-core-app))
-         (id '(catalog recommended))
-         (existing (appkit-view-for-id app id))
-         (state
-          (or (and existing (appkit-view-state existing))
-              (bili-browse--make-catalog-state 'recommended))))
-    (bili-browse--open-catalog
-     id "*Bilibili For You*" state)))
+  (bili-browse--open-catalog
+   '(catalog recommended) "*Bilibili For You*"
+   (bili-browse--make-catalog-state 'recommended)))
 
 (defun bili-browse-home ()
   "Open or reuse the popular-video catalog."
   (interactive)
-  (let* ((app (bili-core-app))
-         (id '(catalog home))
-         (existing (appkit-view-for-id app id))
-         (state (or (and existing (appkit-view-state existing))
-                    (bili-browse--make-catalog-state 'home))))
-    (bili-browse--open-catalog id "*Bilibili Popular*" state)))
+  (bili-browse--open-catalog
+   '(catalog home) "*Bilibili Popular*"
+   (bili-browse--make-catalog-state 'home)))
 
 (defun bili-browse--normalize-query (query)
   "Return QUERY trimmed and collapsed for stable view identity."
@@ -563,20 +687,18 @@ QUIET suppresses echo-area messages for automatic pagination."
   (let ((normalized (bili-browse--normalize-query query)))
     (when (string-empty-p normalized)
       (user-error "Bilibili search query cannot be empty"))
-    (let* ((app (bili-core-app))
-           (id (list 'catalog 'search normalized))
-           (existing (appkit-view-for-id app id))
-           (state (or (and existing (appkit-view-state existing))
-                      (bili-browse--make-catalog-state 'search normalized)))
-           (display-query (truncate-string-to-width normalized 48 nil nil "…")))
+    (let ((display-query
+           (truncate-string-to-width normalized 48 nil nil "…")))
       (bili-browse--open-catalog
-       id (format "*Bilibili Search: %s*" display-query) state))))
+       (list 'catalog 'search normalized)
+       (format "*Bilibili Search: %s*" display-query)
+       (bili-browse--make-catalog-state 'search normalized)))))
 
 (defun bili-browse-edit-search ()
   "Prompt for a new search, seeded from the current search when available."
   (interactive)
-  (let* ((view (bili-browse--current-catalog-view))
-         (state (and view (bili-browse--catalog-state view)))
+  (let* ((surface (bili-browse--current-catalog-surface))
+         (state (and surface (bili-browse--catalog-state surface)))
          (initial (and (eq (plist-get state :kind) 'search)
                        (plist-get state :query))))
     (bili-browse-search
@@ -586,12 +708,9 @@ QUIET suppresses echo-area messages for automatic pagination."
 (defun bili-browse-live ()
   "Open or reuse the recommended live-room catalog."
   (interactive)
-  (let* ((app (bili-core-app))
-         (id '(catalog live))
-         (existing (appkit-view-for-id app id))
-         (state (or (and existing (appkit-view-state existing))
-                    (bili-browse--make-catalog-state 'live))))
-    (bili-browse--open-catalog id "*Bilibili Recommended Live*" state)))
+  (bili-browse--open-catalog
+   '(catalog live) "*Bilibili Recommended Live*"
+   (bili-browse--make-catalog-state 'live)))
 (defun bili-browse-open-url (input)
   "Open Bilibili URL or identifier INPUT in its owning detail view."
   (pcase (bili-model-parse-location input)

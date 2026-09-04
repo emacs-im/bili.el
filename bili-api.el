@@ -535,6 +535,13 @@ ERRBACK receives failures; OWNER controls request cancellation."
    `((platform . "web") (web_location . "444.8") (page . ,page))
    callback :errback errback :owner owner))
 
+(defun bili-api-effect-cancellation (request)
+  "Return transport cancellation for effect-owned REQUEST, or nil."
+  (when (bili-api-request-p request)
+    (appkit-cancellation-create
+     :kind 'transport
+     :cancel (lambda () (bili-api-cancel request)))))
+
 (provide 'bili-api)
 
 ;;; bili-api.el ends here

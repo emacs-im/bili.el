@@ -1,8 +1,9 @@
-;;; bili-detail-test.el --- Tests for Bilibili detail views  -*- lexical-binding: t; -*-
+;;; bili-detail-test.el --- Tests for Bilibili generated details  -*- lexical-binding: t; -*-
 
 (require 'ert)
 (require 'cl-lib)
 (require 'bili-detail)
+(require 'bili-test-helper)
 
 (defun bili-detail-test--video-json ()
   "Return one multi-part Bilibili video response."
@@ -22,134 +23,143 @@
   "Return a canonical live room with STATUS."
   (bili-live-room-create
    :id 42 :short-id 7 :title "Canonical room" :owner "Streamer"
-   :cover "https://example.test/live.jpg" :parent-area "Games"
+   :cover "" :parent-area "Games"
    :area "Action" :online 123 :live-status status
    :description "Room description"))
 
-(ert-deftest bili-detail-video-uses-multiline-projection-and-selects-part ()
-  (let (view buffer played)
+(ert-deftest bili-detail-video-renders-and-plays-selected-part ()
+  (let (surface requested-cid opened-page)
     (unwind-protect
-        (cl-letf (((symbol-function 'bili-api-video)
-                   (lambda (_bvid callback &rest _keys)
-                     (funcall callback (bili-detail-test--video-json))))
-                  ((symbol-function 'bili-playback-video)
-                   (lambda (video &optional owner &rest keys)
-                     (setq played
-                           (list video owner (plist-get keys :page)))
-                     (funcall (plist-get keys :callback) (current-buffer))
-                     nil))
-                  ((symbol-function 'message) #'ignore))
-          (setq view (bili-detail-open-video "BV1xx411c7mD")
-                buffer (appkit-view-buffer view))
-          (appkit-sync-invalidations view)
-          (should (appkit-projection-view-p view))
-          (with-current-buffer buffer
+        (cl-letf
+            (((symbol-function 'bili-cover--image-display-available-p)
+              (lambda () nil))
+             ((symbol-function 'bili-api-video)
+              (lambda (_bvid callback &rest _keys)
+                (funcall callback (bili-detail-test--video-json))))
+             ((symbol-function 'bili-api-video-playurl)
+              (lambda (_bvid cid callback &rest _keys)
+                (setq requested-cid cid)
+                (funcall
+                 callback
+                 '((quality . 64)
+                   (durl . (((url . "https://cdn.example/video.mp4"))))))))
+             ((symbol-function 'bili-playback-open-video)
+              (lambda (_video _data _owner &rest keys)
+                (setq opened-page (plist-get keys :page))
+                (current-buffer))))
+          (setq surface
+                (bili-detail-open-video "BV1xx411c7mD"))
+          (bili-test-drain surface)
+          (with-current-buffer (appkit-surface-buffer surface)
             (should (derived-mode-p 'bili-detail-mode))
-            (should (string-match-p "First paragraph\nSecond paragraph"
-                                    (buffer-string)))
+            (should (string-match-p
+                     "First paragraph\nSecond paragraph"
+                     (buffer-string)))
             (should (string-match-p "P2  Part two" (buffer-string)))
-            (should-not
-             (string-match-p "g refresh.*P play" (buffer-string)))
             (bili-detail--play-page-action
-             (cadr (bili-video-pages
-                    (bili-core-video (appkit-view-app view)
-                                     "BV1xx411c7mD")))))
-          (should (= (bili-video-page-cid (nth 2 played)) 43))
-          (should (appkit-view-operation-p (cadr played)))
-          (should (eq (appkit-view-operation-view (cadr played)) view))
-          (should-not (appkit-view-operation-current-p (cadr played))))
-      (bili-core-stop)
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
+             (cadr
+              (bili-video-pages
+               (bili-core-video
+                (appkit-surface-app surface)
+                "BV1xx411c7mD")))))
+          (bili-test-drain surface)
+          (should (= requested-cid 43))
+          (should (= (bili-video-page-cid opened-page) 43))
+          (should (eq (plist-get
+                       (appkit-surface-model surface) :playback-phase)
+                      'idle)))
+      (bili-test-stop-surface surface)
+      (bili-core-stop))))
 
-(ert-deftest bili-detail-resolves-live-identity-before-opening-view ()
-  (let (view same buffer)
+(ert-deftest bili-detail-resolves-live-identity-and-reuses-surface ()
+  (let (surface same)
     (unwind-protect
-        (cl-letf (((symbol-function 'bili-live-resolve-room)
-                   (lambda (room-id callback &rest _keys)
-                     (should (= room-id 7))
-                     (funcall callback (bili-detail-test--room 1))
-                     nil))
-                  ((symbol-function 'message) #'ignore))
-          (should-not (bili-detail-open-live-room 7))
-          (setq view (appkit-view-for-id
-                      (bili-core-app) '(detail live 42))
-                buffer (appkit-view-buffer view)
-                same (bili-detail-open-live-room 42))
-          (should (appkit-view-live-p view))
-          (should (eq view same))
-          (should (= (hash-table-count
-                      (appkit-app-view-registry (bili-core-app)))
-                     1))
-          (appkit-sync-invalidations view)
-          (with-current-buffer buffer
+        (cl-letf
+            (((symbol-function 'bili-cover--image-display-available-p)
+              (lambda () nil))
+             ((symbol-function 'bili-live-resolve-room)
+              (lambda (room-id callback &rest _keys)
+                (should (= room-id 7))
+                (funcall callback (bili-detail-test--room 1)))))
+          (setq surface (bili-detail-open-live-room 7))
+          (bili-test-drain surface)
+          (setq same (bili-detail-open-live-room 7))
+          (should (eq surface same))
+          (should (= (plist-get
+                      (appkit-surface-model surface) :id)
+                     42))
+          (with-current-buffer (appkit-surface-buffer surface)
             (should (string-match-p "Streamer" (buffer-string)))
             (should (string-match-p "Watch live" (buffer-string)))))
-      (bili-core-stop)
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
+      (bili-test-stop-surface surface)
+      (bili-core-stop))))
 
-(ert-deftest bili-detail-distinguishes-round-replay-from-offline ()
-  (let (view buffer)
+(ert-deftest bili-detail-round-replay-refuses-live-playback ()
+  (let (surface)
     (unwind-protect
-        (progn
-          (setq view (bili-detail--open 'live 42
-                                        (bili-detail-test--room 2))
-                buffer (appkit-view-buffer view))
-          (appkit-sync-invalidations view)
-          (with-current-buffer buffer
-            (should (string-match-p "Round/replay in progress"
-                                    (buffer-string)))
-            (should-not (string-match-p "Offline" (buffer-string)))
+        (cl-letf
+            (((symbol-function 'bili-cover--image-display-available-p)
+              (lambda () nil))
+             ((symbol-function 'bili-live-resolve-room)
+              (lambda (_room-id callback &rest _keys)
+                (funcall callback (bili-detail-test--room 2)))))
+          (setq surface (bili-detail-open-live-room 42))
+          (bili-test-drain surface)
+          (with-current-buffer (appkit-surface-buffer surface)
+            (should (string-match-p
+                     "Round/replay in progress" (buffer-string)))
             (should-not (string-match-p "Watch live" (buffer-string)))
             (should-error (bili-detail-play) :type 'user-error)))
-      (bili-core-stop)
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
+      (bili-test-stop-surface surface)
+      (bili-core-stop))))
 
-(ert-deftest bili-detail-keeps-playback-error-in-the-view ()
-  (let (view buffer)
+(ert-deftest bili-detail-keeps-playback-failure-in-surface-state ()
+  (let (surface)
     (unwind-protect
-        (cl-letf (((symbol-function 'bili-api-video)
-                   (lambda (_bvid callback &rest _keys)
-                     (funcall callback (bili-detail-test--video-json))))
-                  ((symbol-function 'bili-playback-video)
-                   (lambda (_video &optional _owner &rest keys)
-                     (funcall (plist-get keys :errback) "Region locked")
-                     nil))
-                  ((symbol-function 'message) #'ignore))
-          (setq view (bili-detail-open-video "BV1xx411c7mD")
-                buffer (appkit-view-buffer view))
-          (appkit-sync-invalidations view)
-          (with-current-buffer buffer (bili-detail-play))
-          (appkit-sync-invalidations view)
-          (with-current-buffer buffer
-            (should (string-match-p "Playback failed: Region locked"
-                                    (buffer-string)))
+        (cl-letf
+            (((symbol-function 'bili-cover--image-display-available-p)
+              (lambda () nil))
+             ((symbol-function 'bili-api-video)
+              (lambda (_bvid callback &rest _keys)
+                (funcall callback (bili-detail-test--video-json))))
+             ((symbol-function 'bili-api-video-playurl)
+              (lambda (_bvid _cid _callback &rest keys)
+                (funcall (plist-get keys :errback) "Region locked"))))
+          (setq surface
+                (bili-detail-open-video "BV1xx411c7mD"))
+          (bili-test-drain surface)
+          (with-current-buffer (appkit-surface-buffer surface)
+            (bili-detail-play))
+          (bili-test-drain surface)
+          (with-current-buffer (appkit-surface-buffer surface)
+            (should (string-match-p
+                     "Playback failed: Region locked" (buffer-string)))
             (should (string-match-p "Retry playback" (buffer-string)))))
-      (bili-core-stop)
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
+      (bili-test-stop-surface surface)
+      (bili-core-stop))))
 
 (ert-deftest bili-detail-opens-comments-for-canonical-video ()
-  (let* ((video (bili-model-video-from-json
-                 (bili-detail-test--video-json)))
-         (view (bili-detail--open 'video (bili-video-bvid video) video))
-         (buffer (appkit-view-buffer view))
-         opened)
+  (let (surface opened)
     (unwind-protect
-        (cl-letf (((symbol-function 'bili-comment-open)
-                   (lambda (model)
-                     (setq opened model)
-                     'comment-view)))
-          (appkit-sync-invalidations view)
-          (with-current-buffer buffer
-            (should (string-match-p "View comments" (buffer-string)))
-            (should (eq (bili-detail-open-comments) 'comment-view)))
-          (should (eq opened video)))
-      (bili-core-stop)
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
+        (cl-letf
+            (((symbol-function 'bili-cover--image-display-available-p)
+              (lambda () nil))
+             ((symbol-function 'bili-api-video)
+              (lambda (_bvid callback &rest _keys)
+                (funcall callback (bili-detail-test--video-json))))
+             ((symbol-function 'bili-comment-open)
+              (lambda (video)
+                (setq opened video)
+                'comment-surface)))
+          (setq surface
+                (bili-detail-open-video "BV1xx411c7mD"))
+          (bili-test-drain surface)
+          (with-current-buffer (appkit-surface-buffer surface)
+            (should (eq (bili-detail-open-comments)
+                        'comment-surface)))
+          (should (bili-video-p opened)))
+      (bili-test-stop-surface surface)
+      (bili-core-stop))))
 
 (provide 'bili-detail-test)
 

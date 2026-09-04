@@ -10,6 +10,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'appkit-effect)
 (require 'bili-api)
 (require 'bili-model)
 
@@ -142,6 +143,13 @@ ERRBACK receives a readable failure string.  OWNER owns both API steps."
           (setf (bili-live-request-child request) init-child))))
     (unless (bili-live-request-settled-p request)
       request)))
+
+(defun bili-live-effect-cancellation (request)
+  "Return transport cancellation for effect-owned live REQUEST, or nil."
+  (when (bili-live-request-p request)
+    (appkit-cancellation-create
+     :kind 'transport
+     :cancel (lambda () (bili-live-cancel request)))))
 
 (defun bili-live-catalog-items (data)
   "Return normalized live catalog items from directory DATA."

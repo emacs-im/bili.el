@@ -11,8 +11,9 @@
 
 (require 'cl-lib)
 (require 'subr-x)
-(require 'appkit-core)
 (require 'appkit-presentation)
+(require 'appkit-surface)
+(require 'appkit-ui)
 (require 'bili-cover)
 (require 'bili-core)
 (require 'bili-model)
@@ -84,9 +85,9 @@
     (0 (cons "OFFLINE" 'bili-disabled-face))
     (_ (cons "STATUS UNKNOWN" 'warning))))
 
-(defun bili-render--catalog-width ()
-  "Return the current catalog row width, including hidden-buffer fallback."
-  (or (appkit-view-responsive-width)
+(defun bili-render--catalog-width (surface)
+  "Return SURFACE's catalog row width with a hidden-buffer fallback."
+  (or (appkit-surface-responsive-width surface)
       (and (boundp 'fill-column)
            (integerp fill-column)
            (> fill-column 0)
@@ -183,19 +184,18 @@ alignment inserts literal padding into the buffer."
     (insert (propertize "\n" 'line-height t))
     (appkit-ui-apply-line-prefix start (point) prefix)))
 
-(defun bili-render-insert-catalog-card (view key)
-  "Insert canonical catalog KEY from VIEW as a sliced-cover card."
-  (let* ((app (appkit-view-app view))
-         (item (bili-core-catalog-item app key)))
+(defun bili-render-insert-catalog-card (surface app-read-view key)
+  "Insert canonical catalog KEY as a sliced-cover card for SURFACE."
+  (let ((item (bili-core-catalog-item app-read-view key)))
     (unless (bili-catalog-item-p item)
       (error "Bilibili catalog row lost its canonical item"))
     (let* ((cover-layout
             (bili-cover-catalog-slices
-             view key (bili-catalog-item-cover item)))
+             surface key (bili-catalog-item-cover item)))
            (cover-columns (car cover-layout))
            (cover-rows (cdr cover-layout))
            (prefix-width (+ cover-columns 2))
-           (width (bili-render--catalog-width))
+           (width (bili-render--catalog-width surface))
            (content-width (max 1 (- width prefix-width)))
            (content-lines
             (if (eq (bili-catalog-item-kind item) 'live)
@@ -210,9 +210,6 @@ alignment inserts literal padding into the buffer."
                for content in content-lines
                do (bili-render--insert-catalog-content-line
                    content (concat cover gap) width))
-      ;; The stable entity property supports keyboard activation and semantic
-      ;; position restoration.  Catalog cards intentionally have no mouse
-      ;; action or hover presentation.
       (add-text-properties
        start (point)
        (list 'bili-item-key key

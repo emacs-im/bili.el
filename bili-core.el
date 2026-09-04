@@ -5,10 +5,9 @@
 
 ;;; Commentary:
 
-;; Own the default UI-free Bilibili App and its canonical entity store.
-;; Surface-local membership, pagination, and presentation state live in the
-;; catalog, detail, and comment Surface models.  Finite transport work is
-;; declared by the App update as keyed Effects.
+;; Own the default UI-free Bilibili App and its immutable canonical entity
+;; store.  Surface-local membership, pagination, and presentation state live in
+;; generated Surfaces.  Finite transport work is declared by App updates.
 
 ;;; Code:
 
@@ -21,7 +20,6 @@
 (declare-function bili-browse--app-update "bili-browse")
 (declare-function bili-comment--app-update "bili-comment")
 (declare-function bili-detail--app-update "bili-detail")
-(declare-function bili-cover--app-update "bili-cover")
 
 (defgroup bili nil
   "Browse and play Bilibili in Emacs."
@@ -34,8 +32,7 @@
   catalog
   comments
   videos
-  rooms
-  covers)
+  rooms)
 
 (defun bili-core--make-session ()
   "Return initialized canonical Bilibili App state."
@@ -44,8 +41,7 @@
    :catalog (make-hash-table :test #'equal)
    :comments (make-hash-table :test #'equal)
    :videos (make-hash-table :test #'equal)
-   :rooms (make-hash-table :test #'equal)
-   :covers (make-hash-table :test #'equal)))
+   :rooms (make-hash-table :test #'equal)))
 
 (defvar bili-core--app nil
   "Default live Bilibili App runtime.")
@@ -69,8 +65,6 @@
      (bili-comment--app-update context model message))
     (`(detail . ,_)
      (bili-detail--app-update context model message))
-    (`(cover . ,_)
-     (bili-cover--app-update context model message))
     (_ (appkit-next-reject
         (format "Unsupported Bilibili App message: %S" message)))))
 
@@ -113,92 +107,100 @@ default App."
     (appkit-app-close bili-core--app))
   (setq bili-core--app nil))
 
-(defun bili-core-observe (session)
-  "Advance and return canonical observation revision in SESSION."
-  (cl-incf (bili-core-session-revision (bili-core-session session))))
-
-(defun bili-core-store-catalog-items (session items)
-  "Commit normalized catalog ITEMS in SESSION and return stable keys."
-  (dolist (item items)
-    (unless (bili-catalog-item-p item)
-      (error "Invalid Bilibili catalog item")))
-  (let ((session (bili-core-session session)) keys changed-p)
-    (dolist (item items)
-      (let ((key (list (bili-catalog-item-kind item)
-                       (bili-catalog-item-id item))))
+(defun bili-core--upsert (table values key-function predicate)
+  "Return a possibly copied TABLE and stable keys for VALUES."
+  (let ((next table) copied-p keys)
+    (dolist (value values)
+      (unless (funcall predicate value)
+        (error "Invalid canonical Bilibili entity"))
+      (let ((key (funcall key-function value)))
         (push key keys)
-        (unless (equal item (gethash key (bili-core-session-catalog session)))
-          (puthash key item (bili-core-session-catalog session))
-          (setq changed-p t))))
-    (when changed-p (bili-core-observe session))
-    (nreverse keys)))
+        (unless (equal value (gethash key table))
+          (unless copied-p
+            (setq next (copy-hash-table table)
+                  copied-p t))
+          (puthash key value next))))
+    (cons next (nreverse keys))))
+
+(defun bili-core--commit-table (session slot table)
+  "Return SESSION with changed SLOT replaced by TABLE."
+  (let ((next (copy-bili-core-session session)))
+    (setf (bili-core-session-revision next)
+          (1+ (bili-core-session-revision session)))
+    (pcase slot
+      ('catalog (setf (bili-core-session-catalog next) table))
+      ('comments (setf (bili-core-session-comments next) table))
+      ('videos (setf (bili-core-session-videos next) table))
+      ('rooms (setf (bili-core-session-rooms next) table))
+      (_ (error "Unknown Bilibili canonical table: %S" slot)))
+    next))
+
+(defun bili-core--put-catalog-items (session items)
+  "Return `(SESSION . KEYS)' after committing normalized catalog ITEMS."
+  (let* ((session (bili-core-session session))
+         (current (bili-core-session-catalog session))
+         (result
+          (bili-core--upsert
+           current items
+           (lambda (item)
+             (list (bili-catalog-item-kind item)
+                   (bili-catalog-item-id item)))
+           #'bili-catalog-item-p)))
+    (cons (if (eq current (car result))
+              session
+            (bili-core--commit-table session 'catalog (car result)))
+          (cdr result))))
 
 (defun bili-core-catalog-item (owner key)
   "Return OWNER's canonical catalog item at KEY, or nil."
   (gethash key (bili-core-session-catalog (bili-core-session owner))))
 
-(defun bili-core-store-comments (session aid comments)
-  "Commit normalized COMMENTS for video AID in SESSION and return ids."
+(defun bili-core--put-comments (session aid comments)
+  "Return `(SESSION . IDS)' after committing COMMENTS for video AID."
   (unless (and (integerp aid) (> aid 0))
     (error "Invalid Bilibili comment AID"))
-  (dolist (comment comments)
-    (unless (bili-comment-p comment)
-      (error "Invalid Bilibili comment")))
-  (let ((session (bili-core-session session)) ids changed-p)
-    (dolist (comment comments)
-      (let* ((id (bili-comment-id comment))
-             (key (cons aid id)))
-        (push id ids)
-        (unless (equal comment
-                       (gethash key (bili-core-session-comments session)))
-          (puthash key comment (bili-core-session-comments session))
-          (setq changed-p t))))
-    (when changed-p (bili-core-observe session))
-    (nreverse ids)))
+  (let* ((session (bili-core-session session))
+         (current (bili-core-session-comments session))
+         (result
+          (bili-core--upsert
+           current comments
+           (lambda (comment) (cons aid (bili-comment-id comment)))
+           #'bili-comment-p)))
+    (cons (if (eq current (car result))
+              session
+            (bili-core--commit-table session 'comments (car result)))
+          (mapcar #'cdr (cdr result)))))
 
 (defun bili-core-comment (owner aid comment-id)
   "Return OWNER's canonical COMMENT-ID for video AID, or nil."
   (gethash (cons aid comment-id)
            (bili-core-session-comments (bili-core-session owner))))
 
-(defun bili-core-cover-state (owner key)
-  "Return OWNER's canonical cover state at stable entity KEY."
-  (gethash key (bili-core-session-covers (bili-core-session owner))))
-
-(defun bili-core-store-cover-state (session key state)
-  "Commit cover STATE for stable entity KEY in SESSION."
+(defun bili-core--put-video (session video)
+  "Return SESSION with normalized VIDEO committed."
   (let* ((session (bili-core-session session))
-         (covers (bili-core-session-covers session)))
-    (unless (equal state (gethash key covers))
-      (puthash key state covers)
-      (bili-core-observe session))
-    state))
-
-(defun bili-core-store-video (session video)
-  "Commit normalized VIDEO in SESSION and return its BVID."
-  (unless (bili-video-p video)
-    (error "Invalid Bilibili video"))
-  (let* ((session (bili-core-session session))
-         (bvid (bili-video-bvid video)))
-    (unless (equal video (gethash bvid (bili-core-session-videos session)))
-      (puthash bvid video (bili-core-session-videos session))
-      (bili-core-observe session))
-    bvid))
+         (current (bili-core-session-videos session))
+         (result
+          (bili-core--upsert current (list video) #'bili-video-bvid
+                             #'bili-video-p)))
+    (if (eq current (car result))
+        session
+      (bili-core--commit-table session 'videos (car result)))))
 
 (defun bili-core-video (owner bvid)
   "Return OWNER's canonical video BVID, or nil."
   (gethash bvid (bili-core-session-videos (bili-core-session owner))))
 
-(defun bili-core-store-room (session room)
-  "Commit normalized live ROOM in SESSION and return its room id."
-  (unless (bili-live-room-p room)
-    (error "Invalid Bilibili live room"))
+(defun bili-core--put-room (session room)
+  "Return SESSION with normalized live ROOM committed."
   (let* ((session (bili-core-session session))
-         (room-id (bili-live-room-id room)))
-    (unless (equal room (gethash room-id (bili-core-session-rooms session)))
-      (puthash room-id room (bili-core-session-rooms session))
-      (bili-core-observe session))
-    room-id))
+         (current (bili-core-session-rooms session))
+         (result
+          (bili-core--upsert current (list room) #'bili-live-room-id
+                             #'bili-live-room-p)))
+    (if (eq current (car result))
+        session
+      (bili-core--commit-table session 'rooms (car result)))))
 
 (defun bili-core-room (owner room-id)
   "Return OWNER's canonical live ROOM-ID, or nil."

@@ -11,12 +11,14 @@
 
 (require 'cl-lib)
 (require 'subr-x)
-(require 'appkit-core)
 (require 'appkit-chat-avatar)
+(require 'appkit-command)
 (require 'appkit-discussion)
-(require 'appkit-invalidation)
+(require 'appkit-effect)
 (require 'appkit-projection)
+(require 'appkit-resource)
 (require 'appkit-scroll)
+(require 'appkit-surface)
 (require 'appkit-ui)
 (require 'appkit-presentation)
 (require 'bili-cover)
@@ -34,7 +36,7 @@ Set this to nil to disable automatic pagination."
   :group 'bili)
 
 (defconst bili-comment--request-key 'comments
-  "View request-table key for a comment page request.")
+  "App Effect key prefix for comment page requests.")
 
 
 (defconst bili-comment-row-key-property 'bili-comment-row-key
@@ -63,9 +65,11 @@ Set this to nil to disable automatic pagination."
     (setq-local filter-buffer-substring-function
                 #'appkit-ui-buffer-substring-filter)))
 
-(defun bili-comment--state (view)
-  "Return validated comment state owned by VIEW."
-  (let ((state (and (appkit-view-p view) (appkit-view-state view))))
+(defun bili-comment--state (owner)
+  "Return validated comment state from OWNER."
+  (let ((state (if (appkit-surface-p owner)
+                   (appkit-surface-model owner)
+                 owner)))
     (unless (and (listp state)
                  (eq (plist-get state :type) 'comments)
                  (integerp (plist-get state :aid))
@@ -75,18 +79,18 @@ Set this to nil to disable automatic pagination."
       (error "Invalid Bilibili comment state"))
     state))
 
-(defun bili-comment--current-view ()
-  "Return the current live Bilibili comment view, or nil."
-  (when-let* ((view (appkit-current-view))
-              ((appkit-view-live-p view))
-              (state (appkit-view-state view))
+(defun bili-comment--current-surface ()
+  "Return the current live Bilibili comment Surface, or nil."
+  (when-let* ((surface (appkit-current-surface))
+              ((appkit-surface-live-p surface))
+              (state (appkit-surface-model surface))
               ((eq (plist-get state :type) 'comments)))
-    view))
+    surface))
 
 (defun bili-comment--header-line ()
-  "Return the persistent header line for the current comment view."
-  (if-let* ((view (bili-comment--current-view))
-            (state (bili-comment--state view)))
+  "Return the persistent header line for the current comment Surface."
+  (if-let* ((surface (bili-comment--current-surface))
+            (state (bili-comment--state surface)))
       (format " Bilibili · Comments · %s · %d%s%s"
               (plist-get state :bvid)
               (length (plist-get state :items))
@@ -106,27 +110,27 @@ Set this to nil to disable automatic pagination."
   (appkit-projection-row-create
    :key key
    :payload (append (list :type type) properties)
-   :dependencies (plist-get properties :dependencies)))
+   :dependencies (plist-get properties :dependencies)
+   :resource-demands (plist-get properties :resource-demands)))
 
 (defun bili-comment--avatar-key (aid comment)
   "Return stable avatar key for video AID and COMMENT."
   (list 'comment-avatar aid (bili-comment-id comment)))
 
-(defun bili-comment--dependencies (app aid root-id comment)
-  "Prefetch COMMENT's avatar and return its APP dependencies.
+(defun bili-comment--resources (aid root-id comment)
+  "Return dependencies and avatar demands for COMMENT under ROOT-ID."
+  (let* ((avatar-key (bili-comment--avatar-key aid comment))
+         (avatar-url (bili-comment-avatar comment))
+         (demand (bili-cover-demand avatar-key avatar-url))
+         (resource-key
+          (and demand (appkit-resource-demand-key demand))))
+    (cons
+     (delq nil (list (list 'comment aid root-id) resource-key))
+     (and demand (list demand)))))
 
-AID identifies the video; ROOT-ID identifies COMMENT's canonical root."
-  (let ((avatar-key (bili-comment--avatar-key aid comment))
-        (avatar-url (bili-comment-avatar comment)))
-    (unless (string-empty-p avatar-url)
-      (bili-cover-prefetch app avatar-key avatar-url))
-    (list (list 'comment aid root-id)
-          (bili-cover-resource-key avatar-key))))
-
-(defun bili-comment--project (view state)
-  "Project comment STATE for VIEW into stable Appkit discussion rows."
-  (let* ((app (appkit-view-app view))
-         (aid (plist-get state :aid))
+(defun bili-comment--project (_surface app-read-view state)
+  "Project comment STATE against APP-READ-VIEW into stable rows."
+  (let* ((aid (plist-get state :aid))
          (items (plist-get state :items))
          (phase (plist-get state :phase))
          rows)
@@ -145,19 +149,22 @@ AID identifies the video; ROOT-ID identifies COMMENT's canonical root."
         '(retry) 'action :text "Retry" :action #'bili-comment-retry)
        rows))
     (dolist (id items)
-      (when-let* ((comment (bili-core-comment app aid id)))
+      (when-let* ((comment (bili-core-comment app-read-view aid id)))
         (let* ((root-key (list 'comment aid id))
                (replies (bili-comment-replies comment))
-               (dependency (bili-comment--dependencies app aid id comment)))
+               (resources (bili-comment--resources aid id comment)))
           (push
            (bili-comment--projection-row
             (list 'root id) 'comment
             :comment comment :entry-key root-key
             :depth 0 :connector (and replies 'continue)
-            :dependencies dependency)
+            :dependencies (car resources)
+            :resource-demands (cdr resources))
            rows)
           (cl-loop for reply in replies
                    for tail on replies
+                   for reply-resources =
+                   (bili-comment--resources aid id reply)
                    do
                    (push
                     (bili-comment--projection-row
@@ -167,8 +174,8 @@ AID identifies the video; ROOT-ID identifies COMMENT's canonical root."
                      (list 'comment aid id (bili-comment-id reply))
                      :parent-key root-key :depth 1
                      :connector (if (cdr tail) 'continue 'end)
-                     :dependencies
-                     (bili-comment--dependencies app aid id reply))
+                     :dependencies (car reply-resources)
+                     :resource-demands (cdr reply-resources))
                     rows)))))
     (unless (or items (memq phase '(initial refresh error)))
       (push
@@ -210,16 +217,16 @@ AID identifies the video; ROOT-ID identifies COMMENT's canonical root."
                      (bili-comment-reply-count comment))))))
    " · "))
 
-(defun bili-comment--insert-comment (view entry)
-  "Insert projected comment ENTRY for VIEW through `appkit-discussion'."
+(defun bili-comment--insert-comment (surface entry)
+  "Insert projected comment ENTRY for SURFACE through `appkit-discussion'."
   (let* ((comment (plist-get entry :comment))
          (message (bili-comment-message comment))
          (pixel-size (appkit-chat-avatar-two-line-pixel-size))
          (avatar
           (bili-cover-avatar-image
-           view
+           surface
            (bili-comment--avatar-key
-            (plist-get (bili-comment--state view) :aid) comment)
+            (plist-get (bili-comment--state surface) :aid) comment)
            (bili-comment-avatar comment)
            pixel-size))
          (body-inserter
@@ -244,7 +251,7 @@ AID identifies the video; ROOT-ID identifies COMMENT's canonical root."
       :footer (bili-comment--footer-text comment)
       :footer-face 'bili-meta-face
       :connector (plist-get entry :connector))
-     :width (or (appkit-view-responsive-width) 80)
+     :width (or (appkit-surface-responsive-width surface) 80)
      :avatar-pixel-size pixel-size)))
 
 (defun bili-comment--insert-action (text action)
@@ -256,16 +263,15 @@ AID identifies the video; ROOT-ID identifies COMMENT's canonical root."
     (insert "\n")
     (appkit-ui-apply-line-prefix start (point) "    ")))
 
-(defun bili-comment--print-row (projection-row)
-  "Render one comment PROJECTION-ROW."
-  (let* ((view (or (bili-comment--current-view)
-                   (error "No live Bilibili comment view")))
-         (entry (appkit-projection-row-payload projection-row))
+(defun bili-comment--print-row
+    (surface _app-read-view projection-row)
+  "Render one comment PROJECTION-ROW for SURFACE."
+  (let* ((entry (appkit-projection-row-payload projection-row))
          (type (plist-get entry :type))
          (text (plist-get entry :text)))
     (pcase type
       ('comment
-       (bili-comment--insert-comment view entry))
+       (bili-comment--insert-comment surface entry))
       ('note
        (appkit-presentation-insert-note-line text :face 'bili-meta-face))
       ('error
@@ -274,17 +280,6 @@ AID identifies the video; ROOT-ID identifies COMMENT's canonical root."
        (bili-comment--insert-action text (plist-get entry :action)))
       (_ (error "Unknown Bilibili comment row type: %S" type)))))
 
-(defun bili-comment--sync (view invalidations _events)
-  "Synchronize comment VIEW from INVALIDATIONS."
-  (let* ((state (bili-comment--state view))
-         (position (or (plist-get state :position-intent) 'preserve)))
-    (setf (plist-get state :position-intent) nil)
-    (with-current-buffer (appkit-view-buffer view)
-      (appkit-projection-sync-invalidations
-          view invalidations (bili-comment--project view state)
-        :reconcile-parts '(comments)
-        :position position)
-      (force-mode-line-update))))
 
 (defun bili-comment--new-ids (current candidates)
   "Return CANDIDATES not already present in CURRENT."
@@ -319,161 +314,328 @@ When INITIAL-P is non-nil, prepend provider-pinned comments."
         (push model models)))))
 
 
-(defun bili-comment--failed (view state phase message &optional quiet)
-  "Install request failure MESSAGE for PHASE in VIEW and STATE."
-  (setf (plist-get state :phase) 'error
-        (plist-get state :failed-phase) phase
-        (plist-get state :message) message)
-  (appkit-request-sync view :structure t :part 'comments :position t)
-  (unless quiet
-    (message "%s" message)))
+(defun bili-comment--render-change (&optional position)
+  "Return a full comment render request restoring POSITION."
+  (appkit-projection-change-create
+   :full-p t :frame-p t :position (or position 'preserve)))
 
-(defun bili-comment--succeeded (view state phase data)
-  "Install comment DATA for PHASE in VIEW and STATE."
-  (condition-case error-data
-      (let* ((cursor (alist-get 'cursor data))
-             (models (bili-comment--response-models
-                      data (not (eq phase 'older))))
-             (app (appkit-view-app view))
-             (ids (bili-core-store-comments
-                   app (plist-get state :aid) models))
-             (current (plist-get state :items))
-             (new (if (eq phase 'older)
-                      (bili-comment--new-ids current ids)
-                    ids))
-             (pagination (alist-get 'pagination_reply cursor))
-             (next-offset (alist-get 'next_offset pagination)))
-        (unless (listp cursor)
-          (error "Bilibili comment response has no cursor"))
-        (setf (plist-get state :items)
-              (if (eq phase 'older) (append current new) ids)
-              (plist-get state :cursor)
-              (and (stringp next-offset)
-                   (not (string-empty-p next-offset))
-                   next-offset)
-              (plist-get state :total)
-              (bili-model--number (alist-get 'all_count cursor))
-              (plist-get state :phase) 'ready
-              (plist-get state :failed-phase) nil
-              (plist-get state :message) nil
-              (plist-get state :loaded-p) t
-              (plist-get state :position-intent)
-              (and (eq phase 'initial) 'first)
-              (plist-get state :exhausted-p)
-              (or (eq (alist-get 'is_end cursor) t)
-                  (null models)
-                  (and (eq phase 'older) (null new))
-                  (null next-offset)))
-        (appkit-request-sync
-         view :structure t :part 'comments :position t))
-    (error
-     (bili-comment--failed
-      view state phase (error-message-string error-data) t))))
+(defun bili-comment--reply-command (route message)
+  "Return a report-delivery command sending MESSAGE to ROUTE."
+  (appkit-command-post-message
+   :target route :message message :delivery 'report))
 
-(defun bili-comment--request (view phase &optional quiet)
-  "Start comment VIEW request for PHASE.
+(defun bili-comment--page-effect
+    (context token aid phase offset)
+  "Return App Effect loading one comment page from CONTEXT."
+  (let ((source (appkit-transition-context-source-address context))
+        (route (appkit-transition-context-reply-route context)))
+    (unless (and source route)
+      (error "Comment request lacks a live Surface reply route"))
+    (appkit-effect-create
+     :key (list bili-comment--request-key source)
+     :input (list token aid phase offset route)
+     :start
+     (lambda (_effect-context input _observe resolve reject)
+       (pcase-let ((`(,_token ,request-aid ,_phase
+                                ,request-offset ,_route)
+                    input))
+         (bili-api-effect-cancellation
+          (bili-api-video-comments
+           request-aid resolve
+           :offset request-offset
+           :errback reject
+           :owner bili-api--effect-owner))))
+     :success
+     (lambda (input data)
+       (list 'comments 'transport-succeeded input data))
+     :failure
+     (lambda (input reason)
+       (list 'comments 'transport-failed input (format "%s" reason)))
+     :cancellation-requirement 'transport)))
 
-QUIET suppresses echo-area messages for automatic pagination."
+(defun bili-comment--app-succeeded (model input data)
+  "Commit comment DATA into App MODEL and reply using INPUT."
+  (pcase-let ((`(,token ,aid ,phase ,_offset ,route) input))
+    (condition-case condition
+        (let* ((cursor (alist-get 'cursor data))
+               (_ (unless (listp cursor)
+                    (error "Bilibili comment response has no cursor")))
+               (models (bili-comment--response-models
+                        data (not (eq phase 'older))))
+               (stored (bili-core--put-comments model aid models))
+               (next-model (car stored))
+               (ids (cdr stored))
+               (pagination (alist-get 'pagination_reply cursor))
+               (raw-offset (alist-get 'next_offset pagination))
+               (next-offset
+                (and (stringp raw-offset)
+                     (not (string-empty-p raw-offset))
+                     raw-offset))
+               (metadata
+                (list :cursor next-offset
+                      :total
+                      (bili-model--number (alist-get 'all_count cursor))
+                      :provider-exhausted
+                      (or (eq (alist-get 'is_end cursor) t)
+                          (null models)
+                          (null next-offset)))))
+          (appkit-next
+           :model next-model
+           :render appkit-render-none
+           :commands
+           (list
+            (bili-comment--reply-command
+             route
+             (list 'comments 'succeeded
+                   token phase ids metadata)))))
+      (error
+       (appkit-next
+        :model model
+        :render appkit-render-none
+        :commands
+        (list
+         (bili-comment--reply-command
+          route
+          (list 'comments 'failed token phase
+                (error-message-string condition)))))))))
+
+(defun bili-comment--app-update (context model message)
+  "Advance canonical comment state in MODEL for MESSAGE."
+  (pcase message
+    (`(comments request ,token ,aid ,phase ,offset)
+     (if (and token
+              (integerp aid) (> aid 0)
+              (memq phase '(initial refresh older)))
+         (appkit-next
+          :model model
+          :render appkit-render-none
+          :commands
+          (list
+           (appkit-command-start-effect
+            (bili-comment--page-effect
+             context token aid phase offset))))
+       (appkit-next-reject "Invalid Bilibili comment request")))
+    (`(comments transport-succeeded ,input ,data)
+     (bili-comment--app-succeeded model input data))
+    (`(comments transport-failed
+       (,token ,_aid ,phase ,_offset ,route) ,reason)
+     (appkit-next
+      :model model
+      :render appkit-render-none
+      :commands
+      (list
+       (bili-comment--reply-command
+        route (list 'comments 'failed token phase reason)))))
+    (_ (appkit-next-reject
+        (format "Unsupported Bilibili comment message: %S" message)))))
+
+(defun bili-comment--request-command
+    (context state phase token offset)
+  "Return command requesting a comment page from STATE's App."
+  (appkit-command-post-message
+   :target (appkit-transition-context-parent-address context)
+   :message
+   (list 'comments 'request token
+         (plist-get state :aid) phase offset)
+   :delivery 'report
+   :reply-correlation token))
+
+(defun bili-comment--surface-init (context input)
+  "Initialize one comment Surface from INPUT."
+  (let* ((state (copy-sequence (bili-comment--state input)))
+         (token (make-symbol "bili-comment-request-")))
+    (setf (plist-get state :request-token) token)
+    (appkit-next
+     :model state
+     :render (bili-comment--render-change 'first)
+     :commands
+     (list
+      (bili-comment--request-command
+       context state 'initial token nil)))))
+
+(defun bili-comment--surface-request (context state phase)
+  "Transition comment STATE into request PHASE."
   (unless (memq phase '(initial refresh older))
     (error "Invalid Bilibili comment request phase: %S" phase))
-  (let ((state (bili-comment--state view)))
-    (when (and (eq phase 'older) (plist-get state :exhausted-p))
-      (user-error "No more Bilibili comments"))
-    (let* ((offset (and (eq phase 'older) (plist-get state :cursor)))
-           (operation
-            (appkit-view-operation-begin view bili-comment--request-key)))
-      (setf (plist-get state :phase) phase
-            (plist-get state :failed-phase) nil
-            (plist-get state :message) nil)
-      (appkit-request-sync view :structure t :part 'comments :position t)
-      (bili-api-video-comments
-       (plist-get state :aid)
-       (lambda (data)
-         (when (appkit-view-operation-finish operation)
-           (bili-comment--succeeded view state phase data)))
-       :offset offset
-       :errback
-       (lambda (message)
-         (when (appkit-view-operation-finish operation)
-           (bili-comment--failed view state phase message quiet)))
-       :owner operation))))
+  (if (and (eq phase 'older) (plist-get state :exhausted-p))
+      (appkit-next-reject "No more Bilibili comments")
+    (let ((next (copy-sequence state))
+          (token (make-symbol "bili-comment-request-"))
+          (offset (and (eq phase 'older)
+                       (plist-get state :cursor))))
+      (setf (plist-get next :phase) phase
+            (plist-get next :failed-phase) nil
+            (plist-get next :message) nil
+            (plist-get next :request-token) token)
+      (appkit-next
+       :model next
+       :render (bili-comment--render-change)
+       :commands
+       (list
+        (bili-comment--request-command
+         context next phase token offset))))))
 
-(defun bili-comment--maybe-auto-load (view _window position end)
-  "Load VIEW's next comment page when POSITION approaches END."
-  (when (and (appkit-view-live-p view)
+(defun bili-comment--surface-succeeded
+    (state token phase ids metadata)
+  "Install one comment response in STATE when TOKEN remains current."
+  (if (not (eq token (plist-get state :request-token)))
+      (appkit-next :model state :render appkit-render-none)
+    (let* ((next (copy-sequence state))
+           (current (plist-get state :items))
+           (new (if (eq phase 'older)
+                    (bili-comment--new-ids current ids)
+                  ids)))
+      (setf (plist-get next :items)
+            (if (eq phase 'older) (append current new) ids)
+            (plist-get next :cursor) (plist-get metadata :cursor)
+            (plist-get next :total) (plist-get metadata :total)
+            (plist-get next :phase) 'ready
+            (plist-get next :failed-phase) nil
+            (plist-get next :message) nil
+            (plist-get next :loaded-p) t
+            (plist-get next :request-token) nil
+            (plist-get next :exhausted-p)
+            (or (plist-get metadata :provider-exhausted)
+                (and (eq phase 'older) (null new))))
+      (appkit-next
+       :model next
+       :render
+       (bili-comment--render-change
+        (and (eq phase 'initial) 'first))))))
+
+(defun bili-comment--surface-failed
+    (state token phase reason)
+  "Install comment failure REASON when TOKEN remains current."
+  (if (not (eq token (plist-get state :request-token)))
+      (appkit-next :model state :render appkit-render-none)
+    (let ((next (copy-sequence state)))
+      (setf (plist-get next :phase) 'error
+            (plist-get next :failed-phase) phase
+            (plist-get next :message) reason
+            (plist-get next :request-token) nil)
+      (appkit-next
+       :model next :render (bili-comment--render-change)))))
+
+(defun bili-comment--surface-update (context state message)
+  "Advance comment Surface STATE for MESSAGE."
+  (pcase message
+    (`(request ,phase)
+     (bili-comment--surface-request context state phase))
+    (`(comments succeeded ,token ,phase ,ids ,metadata)
+     (bili-comment--surface-succeeded
+      state token phase ids metadata))
+    (`(comments failed ,token ,phase ,reason)
+     (bili-comment--surface-failed state token phase reason))
+    ('geometry
+     (appkit-next
+      :model state
+      :render (appkit-projection-change-create :geometry-p t)))
+    (_ (appkit-next-reject
+        (format "Unsupported Bilibili comment Surface message: %S"
+                message)))))
+
+(defun bili-comment--maybe-auto-load
+    (surface _window position end)
+  "Request SURFACE's next page when POSITION approaches END."
+  (when (and (appkit-surface-live-p surface)
              (numberp bili-comment-auto-load-threshold)
              (appkit-scroll-near-end-p
               position end bili-comment-auto-load-threshold))
-    (let ((state (bili-comment--state view)))
+    (let ((state (bili-comment--state surface)))
       (when (and (plist-get state :loaded-p)
                  (eq (plist-get state :phase) 'ready)
                  (not (plist-get state :exhausted-p)))
-        (bili-comment--request view 'older t)))))
+        (appkit-surface-post surface '(request older))))))
 
-(defun bili-comment--setup (view)
-  "Initialize comment VIEW and start its first request."
-  (with-current-buffer (appkit-view-buffer view)
-    (appkit-projection-ensure
-     view :printer #'bili-comment--print-row
-     :anchor-property bili-comment-row-key-property
-     :no-separator-p t)
-    (appkit-view-enable-responsive-geometry view)
+(defun bili-comment--setup (surface)
+  "Install lifecycle-owned geometry and scroll observers for SURFACE."
+  (with-current-buffer (appkit-surface-buffer surface)
+    (appkit-surface-enable-responsive-geometry
+     surface
+     (lambda (owner _width)
+       (when (appkit-surface-live-p owner)
+         (appkit-surface-post owner 'geometry))))
     (setq-local
      bili-comment--scroll-observer
      (appkit-scroll-observer-install
-      view
+      surface
       :end-function
       (lambda (window position end)
-        (bili-comment--maybe-auto-load view window position end)))))
-  (appkit-invalidate view :structure t :part 'comments :position t)
-  (appkit-sync-invalidations view)
-  (bili-comment--request view 'initial))
+        (bili-comment--maybe-auto-load
+         surface window position end))))
+    (appkit-surface-refresh-responsive-geometry surface)))
+
+(defconst bili-comment--surface-type
+  (appkit-surface-type-create
+   :name 'bili-comments
+   :mode #'bili-comment-mode
+   :init #'bili-comment--surface-init
+   :update #'bili-comment--surface-update
+   :renderer-factory
+   (lambda (_surface)
+     (appkit-projection-renderer-create
+      :project-all #'bili-comment--project
+      :printer #'bili-comment--print-row
+      :anchor-property bili-comment-row-key-property
+      :geometry-mode 'reproject
+      :no-separator-p t)))
+  "Generated Surface type for Bilibili comments.")
+
+(defun bili-comment--request (surface phase)
+  "Synchronously request PHASE from comment SURFACE."
+  (appkit-surface-send surface (list 'request phase)))
 
 (defun bili-comment-refresh ()
   "Refresh the current Bilibili comment stream."
   (interactive)
-  (if-let* ((view (bili-comment--current-view)))
-      (let ((state (bili-comment--state view)))
+  (if-let* ((surface (bili-comment--current-surface)))
+      (let ((state (bili-comment--state surface)))
         (bili-comment--request
-         view (if (plist-get state :loaded-p) 'refresh 'initial)))
+         surface (if (plist-get state :loaded-p) 'refresh 'initial)))
     (user-error "Current buffer is not a Bilibili comment view")))
 
 (defun bili-comment-retry ()
   "Retry the failed request in the current Bilibili comment stream."
   (interactive)
-  (if-let* ((view (bili-comment--current-view))
-            (state (bili-comment--state view))
+  (if-let* ((surface (bili-comment--current-surface))
+            (state (bili-comment--state surface))
             ((eq (plist-get state :phase) 'error))
             (phase (plist-get state :failed-phase)))
-      (bili-comment--request view phase)
+      (bili-comment--request surface phase)
     (user-error "Current Bilibili comments have no failed request")))
 
-
 (defun bili-comment--new-state (video)
-  "Return fresh comment view state for VIDEO."
+  "Return fresh comment Surface state for VIDEO."
   (list :type 'comments
         :aid (bili-video-aid video)
         :bvid (bili-video-bvid video)
         :items nil :cursor nil :total nil
         :phase 'initial :failed-phase nil :message nil
-        :loaded-p nil :exhausted-p nil :position-intent nil))
+        :loaded-p nil :exhausted-p nil :request-token nil))
 
 (defun bili-comment-open (video)
-  "Open or reuse the read-only comment stream for VIDEO."
+  "Open or reuse the read-only comment Surface for VIDEO."
   (unless (and (bili-video-p video) (> (bili-video-aid video) 0))
     (error "Invalid Bilibili video for comments"))
   (let* ((app (bili-core-app))
          (aid (bili-video-aid video))
          (id (list 'comments aid))
-         (existing (appkit-view-for-id app id))
-         (state (or (and existing (appkit-view-state existing))
-                    (bili-comment--new-state video))))
-    (appkit-open-view
-     :app app :id id :mode #'bili-comment-mode
-     :buffer-name (format "*Bilibili Comments: %s*" (bili-video-bvid video))
-     :state state :sync-function #'bili-comment--sync
-     :parts '(comments geometry) :position-policy 'semantic
-     :setup #'bili-comment--setup :select t)))
+         (existing (appkit-app-surface app id)))
+    (if (appkit-surface-live-p existing)
+        (progn
+          (pop-to-buffer (appkit-surface-buffer existing))
+          existing)
+      (let ((surface
+             (appkit-open-generated-surface
+              bili-comment--surface-type
+              :app app :identity id
+              :input (bili-comment--new-state video)
+              :buffer-name
+              (format "*Bilibili Comments: %s*"
+                      (bili-video-bvid video))
+              :select t)))
+        (bili-comment--setup surface)
+        surface))))
 
 (provide 'bili-comment)
 

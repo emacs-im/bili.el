@@ -13,10 +13,9 @@
 (require 'cl-lib)
 (require 'subr-x)
 (require 'url-parse)
-(require 'appkit-core)
+(require 'appkit-effect)
 (require 'appkit-media-resource)
 (require 'bili-api)
-(require 'bili-core)
 (require 'bili-model)
 
 (cl-defstruct (bili-playback-source
@@ -93,8 +92,8 @@
         (appkit-media-video-session-close session)))))
 
 (cl-defun bili-playback-open-video
-    (video playurl-data &optional owner &key page)
-  "Open VIDEO using progressive PLAYURL-DATA under Appkit OWNER.
+    (video playurl-data owner &key page)
+  "Open VIDEO from PLAYURL-DATA under Appkit OWNER.
 
 PAGE selects the canonical video part and defaults to VIDEO's primary page."
   (unless (bili-video-p video)
@@ -106,14 +105,13 @@ PAGE selects the canonical video part and defaults to VIDEO's primary page."
                 (bili-video-cid video)))
          (source (bili-playback-video-source playurl-data))
          (url (bili-playback-source-url source))
-         (app-owner (or owner (bili-core-app)))
          (session
           (appkit-media-video-session-create
            (appkit-media-resource-create
             :url url :name (format "%s-%s.mp4" (bili-video-bvid video) cid)
             :mime-type (bili-playback-source-mime-type source))
            "Bilibili"
-           :owner app-owner
+           :owner owner
            :cache-key
            (format "bili-video:%s:%s:%s"
                    (bili-video-bvid video) cid
@@ -129,14 +127,13 @@ PAGE selects the canonical video part and defaults to VIDEO's primary page."
                  (bili-video-page-number selected)
                  (bili-video-page-title selected))
        (bili-video-title video))
-     app-owner)))
+     owner)))
 
-(defun bili-playback-open-live (room play-info &optional owner)
+(defun bili-playback-open-live (room play-info owner)
   "Open live ROOM using transient PLAY-INFO under Appkit OWNER."
   (unless (bili-live-room-p room)
     (error "Invalid Bilibili live-room playback model"))
   (let* ((source (bili-playback-live-source play-info))
-         (app-owner (or owner (bili-core-app)))
          (room-id (bili-live-room-id room))
          (session
           (appkit-media-video-session-create
@@ -145,69 +142,52 @@ PAGE selects the canonical video part and defaults to VIDEO's primary page."
             :name (format "bilibili-live-%s.flv" room-id)
             :mime-type (bili-playback-source-mime-type source))
            "Bilibili Live"
-           :owner app-owner
+           :owner owner
            :cache-policy 'none
            :live t
            :request-headers
            `(("Referer" . ,(format "https://live.bilibili.com/%s" room-id))
              ("User-Agent" . ,bili-api-user-agent)))))
     (bili-playback--present-session
-     session (bili-live-room-title room) app-owner)))
+     session (bili-live-room-title room) owner)))
 
-(cl-defun bili-playback-video
-    (video &optional request-owner &key page callback errback)
-  "Resolve and play VIDEO under REQUEST-OWNER.
+(defun bili-playback--video-effect-start
+    (_context input _observe resolve reject)
+  "Resolve and present video playback described by effect INPUT."
+  (pcase-let ((`(,app ,video ,page) input))
+    (let* ((selected (or page (car (bili-video-pages video))))
+           (cid (if selected (bili-video-page-cid selected)
+                  (bili-video-cid video)))
+           (request
+            (bili-api-video-playurl
+             (bili-video-bvid video) cid
+             (lambda (data)
+               (condition-case condition
+                   (funcall
+                    resolve
+                    (bili-playback-open-video
+                     video data app :page selected))
+                 (error
+                  (funcall reject (error-message-string condition)))))
+             :errback reject
+             :owner bili-api--effect-owner)))
+      (bili-api-effect-cancellation request))))
 
-PAGE selects a normalized video part.  CALLBACK receives the opened Canvas
-buffer.  ERRBACK receives a readable failure string."
-  (unless (bili-video-p video)
-    (error "Invalid Bilibili video"))
-  (unless (or (null page) (bili-video-page-p page))
-    (error "Invalid Bilibili video page"))
-  (let* ((selected (or page (car (bili-video-pages video))))
-         (cid (if selected (bili-video-page-cid selected)
-                (bili-video-cid video)))
-         (transport-owner (or request-owner (bili-core-app)))
-         (session-owner
-          (or (appkit-owner-app transport-owner)
-              (error "Bilibili playback has no Appkit application")))
-         (failure (or errback (lambda (message) (message "%s" message)))))
-    (bili-api-video-playurl
-     (bili-video-bvid video) cid
-     (lambda (data)
-       (condition-case error-data
-           (let ((buffer
-                  (bili-playback-open-video
-                   video data session-owner :page selected)))
-             (when callback
-               (funcall callback buffer)))
-         (error (funcall failure (error-message-string error-data)))))
-     :errback failure
-     :owner transport-owner)))
-
-(cl-defun bili-playback-live
-    (room &optional request-owner &key callback errback)
-  "Resolve and play live ROOM under REQUEST-OWNER.
-
-CALLBACK receives the opened Canvas buffer.  ERRBACK receives a readable
-failure string."
-  (unless (bili-live-room-p room)
-    (error "Invalid Bilibili live room"))
-  (let* ((transport-owner (or request-owner (bili-core-app)))
-         (session-owner
-          (or (appkit-owner-app transport-owner)
-              (error "Bilibili playback has no Appkit application")))
-         (failure (or errback (lambda (message) (message "%s" message)))))
-    (bili-api-live-play-info
-     (bili-live-room-id room)
-     (lambda (data)
-       (condition-case error-data
-           (let ((buffer (bili-playback-open-live room data session-owner)))
-             (when callback
-               (funcall callback buffer)))
-         (error (funcall failure (error-message-string error-data)))))
-     :errback failure
-     :owner transport-owner)))
+(defun bili-playback--live-effect-start
+    (_context input _observe resolve reject)
+  "Resolve and present live playback described by effect INPUT."
+  (pcase-let ((`(,app ,room) input))
+    (bili-api-effect-cancellation
+     (bili-api-live-play-info
+      (bili-live-room-id room)
+      (lambda (data)
+        (condition-case condition
+            (funcall resolve
+                     (bili-playback-open-live room data app))
+          (error
+           (funcall reject (error-message-string condition)))))
+      :errback reject
+      :owner bili-api--effect-owner))))
 
 (provide 'bili-playback)
 
