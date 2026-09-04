@@ -18,11 +18,10 @@ and direct Canvas playback inside Emacs.
 ## Installation
 
 Install this repository and its three dependencies with your package manager.
-When using the source checkouts together, build the video.el native module first:
+When using this monorepo checkout, build the video.el native module first:
 
 ```sh
-cd /path/to/video.el
-eask run script build-native
+make -C ../video.el module
 ```
 
 ## Commands
