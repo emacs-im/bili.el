@@ -7,7 +7,7 @@
 ;; Version: 0.1.0
 ;; Package-Requires: ((emacs "32.0") (appkit "0.3.0") (browser-session "0.1.0") (video "0.1.0"))
 ;; Keywords: multimedia, convenience
-;; URL: https://github.com/0WD0/bili.el
+;; URL: https://github.com/emacs-im/bili.el
 
 ;;; Commentary:
 
