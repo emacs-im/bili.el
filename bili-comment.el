@@ -55,11 +55,9 @@ Set this to nil to disable automatic pagination."
   "q" #'quit-window
   "?" #'describe-mode)
 
-(define-derived-mode bili-comment-mode special-mode "Bilibili-Comments"
+(define-derived-mode bili-comment-mode appkit-discussion-mode "Bilibili-Comments"
   "Major mode for a read-only Bilibili video comment stream."
-  (setq-local truncate-lines nil
-              word-wrap t
-              switch-to-buffer-preserve-window-point nil
+  (setq-local switch-to-buffer-preserve-window-point nil
               header-line-format '(:eval (bili-comment--header-line)))
   (when (fboundp 'appkit-ui-buffer-substring-filter)
     (setq-local filter-buffer-substring-function
