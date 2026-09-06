@@ -174,7 +174,7 @@
          (width (min (max 1 bili-cover-catalog-max-width)
                      (round (* height (/ 16.0 9.0)))))
          (columns (max 8 (ceiling (/ (float width)
-                                    (max 1 (frame-char-width frame))))))
+                                     (max 1 (frame-char-width frame))))))
          (image
           (with-selected-frame frame
             (bili-cover-image surface entity-key url width height)))
@@ -189,9 +189,9 @@
                  (propertize
                   " " 'display
                   `(space :width
-                          ,(if (display-graphic-p frame)
-                               (list width)
-                             columns))))))
+                    ,(if (display-graphic-p frame)
+                         (list width)
+                       columns))))))
         (add-text-properties
          0 (length row) (list 'help-echo (or url "Cover unavailable")
                               'rear-nonsticky '(display))

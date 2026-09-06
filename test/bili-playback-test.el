@@ -89,7 +89,6 @@
                    "https://live.bilibili.com/6"))
     (should-not (assoc-string "Cookie" headers t))))
 
-
 (ert-deftest bili-playback-video-page-uses-stable-cid-and-public-headers ()
   (let* ((page
           (bili-video-page-create
@@ -120,6 +119,7 @@
     (should (equal (cdr (assoc "Referer" headers))
                    "https://www.bilibili.com/"))
     (should-not (assoc-string "Cookie" headers t))))
+
 (provide 'bili-playback-test)
 
 ;;; bili-playback-test.el ends here

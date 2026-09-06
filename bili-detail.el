@@ -103,7 +103,6 @@
     (cons (list 'live (bili-live-room-id model))
           (bili-live-room-cover model)))))
 
-
 (defun bili-detail--cover-row (model resource)
   "Return MODEL's cover row depending on canonical RESOURCE."
   (let* ((data (bili-detail--cover-data model))
@@ -434,8 +433,6 @@
      start (point)
      (list bili-detail-row-key-property key
            'rear-nonsticky (list bili-detail-row-key-property)))))
-
-
 
 (defun bili-detail--render-change (&optional position)
   "Return a full detail render request restoring POSITION."

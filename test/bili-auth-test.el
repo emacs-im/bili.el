@@ -57,7 +57,6 @@
                            "csrf-value"))))
       (delete-directory directory t))))
 
-
 (ert-deftest bili-auth-capture-is-minimal-and-appkit-owned ()
   (let ((bili-auth--capture-request nil)
         (bili-auth--capture-handle nil)
@@ -94,6 +93,7 @@
       (when (and capture-file (file-exists-p capture-file))
         (delete-file capture-file))
       (bili-core-stop))))
+
 (provide 'bili-auth-test)
 
 ;;; bili-auth-test.el ends here

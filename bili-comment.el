@@ -32,12 +32,11 @@
 
 Set this to nil to disable automatic pagination."
   :type '(choice (const :tag "Disable automatic pagination" nil)
-                 integer)
+          integer)
   :group 'bili)
 
 (defconst bili-comment--request-key 'comments
   "App Effect key prefix for comment page requests.")
-
 
 (defconst bili-comment-row-key-property 'bili-comment-row-key
   "Text property carrying a stable comment projection row key.")
@@ -278,7 +277,6 @@ Set this to nil to disable automatic pagination."
        (bili-comment--insert-action text (plist-get entry :action)))
       (_ (error "Unknown Bilibili comment row type: %S" type)))))
 
-
 (defun bili-comment--new-ids (current candidates)
   "Return CANDIDATES not already present in CURRENT."
   (let ((seen (make-hash-table :test #'eql))
@@ -311,7 +309,6 @@ When INITIAL-P is non-nil, prepend provider-pinned comments."
         (puthash id t seen)
         (push model models)))))
 
-
 (defun bili-comment--render-change (&optional position)
   "Return a full comment render request restoring POSITION."
   (appkit-projection-change-create
@@ -335,7 +332,7 @@ When INITIAL-P is non-nil, prepend provider-pinned comments."
      :start
      (lambda (_effect-context input _observe resolve reject)
        (pcase-let ((`(,_token ,request-aid ,_phase
-                                ,request-offset ,_route)
+                      ,request-offset ,_route)
                     input))
          (bili-api-effect-cancellation
           (bili-api-video-comments

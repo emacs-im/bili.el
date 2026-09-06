@@ -21,7 +21,6 @@
 (require 'bili-auth)
 (require 'bili-core)
 
-
 (defvar url-http-response-status)
 (defvar url-http-end-of-headers)
 (defconst bili-api--web-root "https://api.bilibili.com"
@@ -117,14 +116,14 @@
   "Derive a WBI mixin key from IMAGE-URL and SUB-URL."
   (cl-labels
       ((file-key
-        (url)
-        (unless (stringp url)
-          (error "Bilibili WBI image URL is invalid"))
-        (let* ((path (url-filename (url-generic-parse-url url)))
-               (name (file-name-base (or (file-name-nondirectory path) ""))))
-          (unless (= (length name) 32)
-            (error "Bilibili WBI image key is invalid"))
-          name)))
+         (url)
+         (unless (stringp url)
+           (error "Bilibili WBI image URL is invalid"))
+         (let* ((path (url-filename (url-generic-parse-url url)))
+                (name (file-name-base (or (file-name-nondirectory path) ""))))
+           (unless (= (length name) 32)
+             (error "Bilibili WBI image key is invalid"))
+           name)))
     (let* ((source (concat (file-key image-url) (file-key sub-url)))
            (mixed
             (mapconcat
@@ -322,8 +321,8 @@ cancellation target and do not register a second lifecycle authority."
          (request-owner (and (not effect-owned-p)
                              (or owner (bili-core-app))))
          (request
-          (bili-api--request-create
-           :owner request-owner :callback callback :errback error-fn)))
+           (bili-api--request-create
+            :owner request-owner :callback callback :errback error-fn)))
     (unless (functionp error-fn)
       (error "Bilibili request error callback is not callable"))
     (unless (or effect-owned-p (appkit-owner-live-p request-owner))

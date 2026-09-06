@@ -85,7 +85,6 @@
         (should (eq (plist-get (nthcdr 4 arguments) :errback) errback))
         (should (eq (plist-get (nthcdr 4 arguments) :owner) owner))))))
 
-
 (ert-deftest bili-api-video-catalog-page-size-is-explicit ()
   (let (popular-params search-params)
     (cl-letf (((symbol-function 'bili-api-get)
@@ -108,11 +107,12 @@
        (bili-api-popular 1 #'ignore :page-size 0))
       (should-error
        (bili-api-search-videos "query" 1 #'ignore :page-size 51)))))
+
 (ert-deftest bili-api-recommended-feed-uses-wbi-pagination-contract ()
   (let (root path params options)
     (cl-letf (((symbol-function 'bili-api-wbi-get)
                (lambda (request-root request-path request-params
-                        _callback &rest request-options)
+                                     _callback &rest request-options)
                  (setq root request-root
                        path request-path
                        params request-params

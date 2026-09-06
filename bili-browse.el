@@ -44,7 +44,7 @@
 
 Set this to nil to disable automatic pagination."
   :type '(choice (const :tag "Disable automatic pagination" nil)
-                 integer)
+          integer)
   :group 'bili)
 
 (defconst bili-browse--catalog-request-key 'catalog
@@ -159,6 +159,7 @@ Set this to nil to disable automatic pagination."
       (unless (gethash key seen)
         (puthash key t seen)
         (push key result)))))
+
 (defun bili-browse--projection-row (key type &rest properties)
   "Return one catalog projection row with KEY, TYPE, and PROPERTIES."
   (appkit-projection-row-create
@@ -264,7 +265,6 @@ Set this to nil to disable automatic pagination."
         surface app-read-view (plist-get entry :entity-key)))
       (_ (error "Unknown Bilibili catalog row type: %S" type)))))
 
-
 (defun bili-browse-activate ()
   "Open the Bilibili catalog card at point."
   (interactive)
@@ -318,7 +318,6 @@ Set this to nil to disable automatic pagination."
   (interactive "p")
   (bili-browse--move-item (- (or count 1))))
 
-
 (defun bili-browse--render-change (&optional position)
   "Return a full catalog render request restoring POSITION."
   (appkit-projection-change-create
@@ -371,7 +370,7 @@ Set this to nil to disable automatic pagination."
      :start
      (lambda (_effect-context input _observe resolve reject)
        (pcase-let ((`(,_token ,request-kind ,request-query
-                                ,_phase ,request-page ,_route)
+                      ,_phase ,request-page ,_route)
                     input))
          (bili-api-effect-cancellation
           (bili-browse--dispatch-catalog
@@ -711,6 +710,7 @@ Set this to nil to disable automatic pagination."
   (bili-browse--open-catalog
    '(catalog live) "*Bilibili Recommended Live*"
    (bili-browse--make-catalog-state 'live)))
+
 (defun bili-browse-open-url (input)
   "Open Bilibili URL or identifier INPUT in its owning detail view."
   (pcase (bili-model-parse-location input)

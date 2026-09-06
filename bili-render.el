@@ -93,6 +93,7 @@
            (> fill-column 0)
            fill-column)
       80))
+
 (defun bili-render--catalog-content-parts (left right width)
   "Return `(LEFT . RIGHT)' constrained to WIDTH text columns."
   (let* ((right (or right ""))

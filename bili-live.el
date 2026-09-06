@@ -73,51 +73,51 @@ ERRBACK receives a readable failure string.  OWNER owns both API steps."
     (error "Bilibili live-room callback is not callable"))
   (let* ((error-fn (or errback (lambda (message) (message "%s" message))))
          (request
-          (bili-live--request-create
-           :callback callback :errback error-fn :owner owner))
+           (bili-live--request-create
+            :callback callback :errback error-fn :owner owner))
          (current 'init)
          (init-callback-ran nil))
     (unless (functionp error-fn)
       (error "Bilibili live-room error callback is not callable"))
     (cl-labels
         ((fail-current
-          (stage message)
-          (when (and (eq current stage)
-                     (not (bili-live-request-settled-p request)))
-            (setq current nil)
-            (bili-live--fail request message)))
+           (stage message)
+           (when (and (eq current stage)
+                      (not (bili-live-request-settled-p request)))
+             (setq current nil)
+             (bili-live--fail request message)))
          (start-detail
-          (canonical-id)
-          (setq current 'detail)
-          (setf (bili-live-request-child request) nil)
-          (let ((detail-callback-ran nil)
-                detail-child)
-            (setq
-             detail-child
-             (bili-api-live-room
-              canonical-id
-              (lambda (data)
-                (setq detail-callback-ran t)
-                (when (and (eq current 'detail)
-                           (not (bili-live-request-settled-p request)))
-                  (setq current nil)
-                  (condition-case error-data
-                      (bili-live--succeed
-                       request
-                       (bili-model-live-room-from-json
-                        (bili-live--room-detail data canonical-id)))
-                    (error
-                     (bili-live--fail
-                      request (error-message-string error-data))))))
-              :errback
-              (lambda (message)
-                (setq detail-callback-ran t)
-                (fail-current 'detail message))
-              :owner owner))
-            (when (and (not detail-callback-ran)
-                       (eq current 'detail)
-                       (not (bili-live-request-settled-p request)))
-              (setf (bili-live-request-child request) detail-child)))))
+           (canonical-id)
+           (setq current 'detail)
+           (setf (bili-live-request-child request) nil)
+           (let ((detail-callback-ran nil)
+                 detail-child)
+             (setq
+              detail-child
+              (bili-api-live-room
+               canonical-id
+               (lambda (data)
+                 (setq detail-callback-ran t)
+                 (when (and (eq current 'detail)
+                            (not (bili-live-request-settled-p request)))
+                   (setq current nil)
+                   (condition-case error-data
+                       (bili-live--succeed
+                        request
+                        (bili-model-live-room-from-json
+                         (bili-live--room-detail data canonical-id)))
+                     (error
+                      (bili-live--fail
+                       request (error-message-string error-data))))))
+               :errback
+               (lambda (message)
+                 (setq detail-callback-ran t)
+                 (fail-current 'detail message))
+               :owner owner))
+             (when (and (not detail-callback-ran)
+                        (eq current 'detail)
+                        (not (bili-live-request-settled-p request)))
+               (setf (bili-live-request-child request) detail-child)))))
       (let ((init-child
              (bili-api-live-room-init
               room-id
