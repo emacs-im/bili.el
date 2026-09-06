@@ -32,7 +32,7 @@
 
 Set this to nil to disable automatic pagination."
   :type '(choice (const :tag "Disable automatic pagination" nil)
-          integer)
+                 integer)
   :group 'bili)
 
 (defconst bili-comment--request-key 'comments
@@ -57,10 +57,7 @@ Set this to nil to disable automatic pagination."
 (define-derived-mode bili-comment-mode appkit-discussion-mode "Bilibili-Comments"
   "Major mode for a read-only Bilibili video comment stream."
   (setq-local switch-to-buffer-preserve-window-point nil
-              header-line-format '(:eval (bili-comment--header-line)))
-  (when (fboundp 'appkit-ui-buffer-substring-filter)
-    (setq-local filter-buffer-substring-function
-                #'appkit-ui-buffer-substring-filter)))
+              header-line-format '(:eval (bili-comment--header-line))))
 
 (defun bili-comment--state (owner)
   "Return validated comment state from OWNER."
@@ -332,7 +329,7 @@ When INITIAL-P is non-nil, prepend provider-pinned comments."
      :start
      (lambda (_effect-context input _observe resolve reject)
        (pcase-let ((`(,_token ,request-aid ,_phase
-                      ,request-offset ,_route)
+                              ,request-offset ,_route)
                     input))
          (bili-api-effect-cancellation
           (bili-api-video-comments
@@ -413,7 +410,7 @@ When INITIAL-P is non-nil, prepend provider-pinned comments."
     (`(comments transport-succeeded ,input ,data)
      (bili-comment--app-succeeded model input data))
     (`(comments transport-failed
-       (,token ,_aid ,phase ,_offset ,route) ,reason)
+                (,token ,_aid ,phase ,_offset ,route) ,reason)
      (appkit-next
       :model model
       :render appkit-render-none
