@@ -18,6 +18,38 @@
 (require 'appkit-media-effect)
 (require 'bili-api)
 (require 'bili-model)
+(require 'bili-danmaku)
+
+(defvar-keymap bili-playback-mode-map
+  :doc "Bilibili-only commands layered over a generic video viewer."
+  "d" #'video-toggle-subtitles)
+
+(define-minor-mode bili-playback-mode
+  "Expose Bilibili video commands in the current playback buffer.
+Enabled by Bilibili video presentations, not by ordinary video/image or
+live-room playback.  Generic viewport commands remain in video-mode-map;
+modal application bindings are installed by bili-evil.el."
+  :lighter " Bili"
+  :keymap bili-playback-mode-map
+  (when (and bili-playback-mode (not (derived-mode-p 'video-mode)))
+    (setq bili-playback-mode nil)
+    (user-error "Bilibili playback controls require a video viewer")))
+
+(defun bili-playback--setup-video (cid duration session viewer)
+  "Attach CID/DURATION danmaku and local commands to SESSION's VIEWER."
+  (with-current-buffer viewer (bili-playback-mode 1))
+  (let ((capability (bili-danmaku-start
+                     cid duration (appkit-media-video-session-player session))))
+    (appkit-cancellation-create
+     :kind 'logical
+     :cancel
+     (lambda ()
+       (unwind-protect
+           (when-let* ((capability)
+                       (cancel (appkit-cancellation-cancel capability)))
+             (funcall cancel))
+         (when (buffer-live-p viewer)
+           (with-current-buffer viewer (bili-playback-mode -1))))))))
 
 (cl-defstruct (bili-playback-source
                (:constructor bili-playback--source-create))
@@ -84,11 +116,12 @@
 (cl-defun bili-playback-video-presentation
     (video playurl-data &key page)
   "Return a managed presentation for VIDEO from PLAYURL-DATA.
-
 PAGE selects the canonical video part and defaults to VIDEO's primary page."
   (let* ((selected (or page (car (bili-video-pages video))))
          (cid (if selected (bili-video-page-cid selected)
                 (bili-video-cid video)))
+         (duration (if selected (bili-video-page-duration selected)
+                     (bili-video-duration video)))
          (source (bili-playback-video-source playurl-data)))
     (appkit-media-video-presentation-create
      (appkit-media-resource-create
@@ -108,7 +141,10 @@ PAGE selects the canonical video part and defaults to VIDEO's primary page."
              (or (bili-playback-source-quality source) "default"))
      :request-headers
      `(("Referer" . "https://www.bilibili.com/")
-       ("User-Agent" . ,bili-api-user-agent)))))
+       ("User-Agent" . ,bili-api-user-agent))
+     :setup-function
+     (lambda (session viewer)
+       (bili-playback--setup-video cid duration session viewer)))))
 
 (defun bili-playback-live-presentation (room play-info)
   "Return a managed presentation for live ROOM from PLAY-INFO."

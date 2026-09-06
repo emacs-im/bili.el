@@ -120,6 +120,24 @@
                    "https://www.bilibili.com/"))
     (should-not (assoc-string "Cookie" headers t))))
 
+(ert-deftest bili-playback-evil-controls-stay-local-to-video-viewer ()
+  (skip-unless (require 'evil nil t))
+  (require 'video-evil)
+  (require 'bili-evil)
+  (with-temp-buffer
+    (video-mode)
+    (evil-local-mode 1)
+    (evil-normal-state)
+    (let ((ordinary-binding (key-binding (kbd "d"))))
+      (should-not (eq ordinary-binding #'video-toggle-subtitles))
+      (bili-playback-mode 1)
+      (should (eq (key-binding (kbd "d")) #'video-toggle-subtitles))
+      (should (eq (key-binding (kbd "p")) #'video-toggle))
+      (should (eq (key-binding (kbd "1")) #'digit-argument))
+      (should (eq (key-binding (kbd "g g")) #'evil-goto-first-line))
+      (bili-playback-mode -1)
+      (should (eq (key-binding (kbd "d")) ordinary-binding)))))
+
 (provide 'bili-playback-test)
 
 ;;; bili-playback-test.el ends here

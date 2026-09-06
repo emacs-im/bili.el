@@ -14,6 +14,7 @@
 (require 'bili-browse)
 (require 'bili-comment)
 (require 'bili-detail)
+(require 'bili-playback)
 
 (defcustom bili-evil-initial-state 'normal
   "Initial Evil state for read-only bili.el views.
@@ -68,12 +69,20 @@ Safe to call repeatedly and before or after Evil loads."
        :nm
        "g r" #'bili-comment-refresh
        "g j" #'appkit-discussion-next-entry
-       "g k" #'appkit-discussion-previous-entry))
-    (appkit-evil-normalize-buffers bili-evil--application-modes)))
+       "g k" #'appkit-discussion-previous-entry)
+      (:map bili-playback-mode-map
+       :nm "d" #'video-toggle-subtitles))
+    (appkit-evil-normalize-buffers bili-evil--application-modes)
+    (dolist (buffer (buffer-list))
+      (with-current-buffer buffer
+        (when (bound-and-true-p bili-playback-mode)
+          (appkit-evil-normalize-keymaps))))))
 
 (add-hook 'bili-browse-mode-hook #'appkit-evil-normalize-keymaps)
 (add-hook 'bili-comment-mode-hook #'appkit-evil-normalize-keymaps)
 (add-hook 'bili-detail-mode-hook #'appkit-evil-normalize-keymaps)
+
+(add-hook 'bili-playback-mode-hook #'appkit-evil-normalize-keymaps)
 
 (bili-evil-setup)
 

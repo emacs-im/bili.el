@@ -34,7 +34,7 @@
   "User-Agent sent only to trusted Bilibili API and media origins.")
 
 (defconst bili-api--response-limit (* 4 1024 1024)
-  "Maximum bytes accepted in one Bilibili JSON response body.")
+  "Maximum bytes accepted in one Bilibili response body.")
 
 (defconst bili-api--wbi-mixin-table
   [46 47 18 2 53 8 23 32 15 50 10 31 58 3 45 35
@@ -218,94 +218,121 @@
       (bili-api--retire request)
       (funcall callback value))))
 
-(defun bili-api--response-data (status &optional accepted-codes)
-  "Decode the current buffer, accepting STATUS and provider ACCEPTED-CODES."
+(defun bili-api--response-data (status &optional accepted-codes binary-p)
+  "Decode STATUS after HTTP and byte-size validation.
+ACCEPTED-CODES permits provider codes; BINARY-P returns raw bytes, not JSON."
   (when-let* ((transport-error (plist-get status :error)))
     (error "Bilibili transport failed: %s" transport-error))
   (unless (and (integerp url-http-response-status)
                (<= 200 url-http-response-status 299))
     (error "Bilibili HTTP request failed with status %s"
            (or url-http-response-status "unknown")))
-  (unless (integer-or-marker-p url-http-end-of-headers)
+  (unless (and (integer-or-marker-p url-http-end-of-headers)
+               (<= (point-min) url-http-end-of-headers)
+               (< url-http-end-of-headers (point-max))
+               (eq (char-after url-http-end-of-headers) ?\n))
     (error "Bilibili response has no complete headers"))
-  (let ((size (- (point-max) url-http-end-of-headers)))
-    (when (> size bili-api--response-limit)
-      (error "Bilibili response exceeds %d bytes" bili-api--response-limit)))
-  (goto-char url-http-end-of-headers)
-  (let* ((payload
-          (json-parse-buffer
-           :object-type 'alist :array-type 'list
-           :null-object nil :false-object nil))
-         (code (alist-get 'code payload)))
-    (unless (and (integerp code) (memq code (cons 0 accepted-codes)))
-      (error "Bilibili API error %s: %s"
-             (or code "unknown")
-             (or (alist-get 'message payload)
-                 (alist-get 'msg payload)
-                 "unknown response")))
-    (alist-get 'data payload)))
+  ;; url-http's marker is ON the final header LF, not after it.  A protobuf
+  ;; body can itself start with LF (field 1, wire type 2); preserve that byte.
+  (let ((body-start (1+ url-http-end-of-headers)))
+    (when (> (- (position-bytes (point-max)) (position-bytes body-start))
+             bili-api--response-limit)
+      (error "Bilibili response exceeds %d bytes" bili-api--response-limit))
+    (goto-char body-start)
+    (if binary-p
+        (let ((json-p
+               (save-excursion
+                 (goto-char (point-min))
+                 (let ((case-fold-search t))
+                   (re-search-forward
+                    "^Content-Type:[ \t]*application/[^\n]*json"
+                    url-http-end-of-headers t)))))
+          (when (or json-p
+                    (save-excursion
+                      (condition-case nil
+                          (let ((payload (json-parse-buffer
+                                          :object-type 'alist :array-type 'list)))
+                            (and (listp payload) (assq 'code payload)))
+                        (error nil))))
+            (bili-api--response-data status accepted-codes)
+            (error "Bilibili returned JSON instead of danmaku protobuf"))
+          (encode-coding-string
+           (buffer-substring-no-properties body-start (point-max)) 'binary))
+      (let* ((payload (json-parse-buffer
+                       :object-type 'alist :array-type 'list
+                       :null-object nil :false-object nil))
+             (code (alist-get 'code payload)))
+        (unless (and (integerp code) (memq code (cons 0 accepted-codes)))
+          (error "Bilibili API error %s: %s"
+                 (or code "unknown")
+                 (or (alist-get 'message payload)
+                     (alist-get 'msg payload) "unknown response")))
+        (alist-get 'data payload)))))
 
 (defun bili-api--finish-step
-    (request step-callback status &optional accepted-codes)
-  "Finish one REQUEST step with STATUS and pass data to STEP-CALLBACK.
-
-ACCEPTED-CODES permits explicitly useful nonzero provider response codes."
-  (let ((buffer (current-buffer))
-        result failure)
+    (request step-callback status &optional accepted-codes binary-p)
+  "Finish REQUEST with STATUS, delivering decoded data to STEP-CALLBACK.
+ACCEPTED-CODES permits provider codes; BINARY-P selects raw response bytes."
+  (let ((buffer (current-buffer)) result failure)
     (when (and (not (bili-api-request-settled-p request))
                (eq buffer (bili-api-request-buffer request))
                (or (null (bili-api-request-handle request))
-                   (appkit-handle-alive-p
-                    (bili-api-request-handle request))))
+                   (appkit-handle-alive-p (bili-api-request-handle request))))
       (condition-case error-data
-          (setq result (bili-api--response-data status accepted-codes))
-        (error
-         (setq failure
-               (bili-api--safe-error-message
-                error-data (bili-api-request-credential request)))))
+          (setq result (bili-api--response-data status accepted-codes binary-p))
+        (error (setq failure (bili-api--safe-error-message
+                             error-data (bili-api-request-credential request)))))
       (setf (bili-api-request-buffer request) nil
             (bili-api-request-credential request) nil)
       (bili-api--discard-buffer buffer)
-      (if failure
-          (bili-api--fail request failure)
+      (if failure (bili-api--fail request failure)
         (funcall step-callback result)))))
 
-(defun bili-api--headers (credential)
-  "Return trusted API headers, optionally including CREDENTIAL."
+(defun bili-api--headers (credential &optional binary-p)
+  "Return trusted API headers, optionally including CREDENTIAL.
+BINARY-P requests protobuf rather than the default JSON representation."
   (append
-   `(("Accept" . "application/json")
+   `(("Accept" . ,(if binary-p "application/octet-stream" "application/json"))
      ("Referer" . "https://www.bilibili.com/")
      ("User-Agent" . ,bili-api-user-agent))
    (when credential
      `(("Cookie" . ,(bili-auth-cookie-header credential))))))
 
 (defun bili-api--dispatch-step
-    (request url step-callback &optional accepted-codes)
+    (request url step-callback &optional accepted-codes binary-p)
   "Dispatch trusted URL as one GET step of REQUEST.
-
-ACCEPTED-CODES permits explicitly useful nonzero provider response codes."
+ACCEPTED-CODES permits provider codes; BINARY-P selects raw response bytes."
   (unless (bili-api--trusted-url-p url)
     (error "Bilibili request URL is not trusted: %S" url))
   (let* ((credential (bili-auth-credentials-if-available))
          (url-max-redirections 0)
          (url-http-attempt-keepalives (and url-http-attempt-keepalives
-                                           (null credential)))
+                                         (null credential)))
          (url-request-method "GET")
          (url-request-data nil)
-         (url-request-extra-headers (bili-api--headers credential))
-         buffer)
+         (url-request-extra-headers (bili-api--headers credential binary-p))
+         buffer ready-p called-p pending-status)
     (setf (bili-api-request-credential request) credential)
     (let ((inhibit-quit t))
       (setq buffer
             (url-retrieve
              (encode-coding-string url 'us-ascii)
              (lambda (status)
-               (bili-api--finish-step
-                request step-callback status accepted-codes))
+               (if ready-p
+                   (bili-api--finish-step request step-callback status
+                                          accepted-codes binary-p)
+                 (setq called-p t pending-status status)))
              nil t t)))
     (unless (buffer-live-p buffer)
       (error "Bilibili did not start the HTTP request"))
-    (setf (bili-api-request-buffer request) buffer)
+    (if (bili-api-request-settled-p request)
+        (bili-api--discard-buffer buffer)
+      (setf (bili-api-request-buffer request) buffer)
+      (setq ready-p t)
+      (when called-p
+        (with-current-buffer buffer
+          (bili-api--finish-step request step-callback pending-status
+                                 accepted-codes binary-p))))
     buffer))
 
 (defun bili-api--start (callback errback owner starter)
@@ -540,6 +567,24 @@ ERRBACK receives failures; OWNER controls request cancellation."
     (appkit-cancellation-create
      :kind 'transport
      :cancel (lambda () (bili-api-cancel request)))))
+
+(cl-defun bili-api-danmaku-segment (cid segment-index callback &key errback owner)
+  "Read raw protobuf danmaku for CID and one-based SEGMENT-INDEX.
+Each segment spans 360 seconds.  CALLBACK receives an unibyte string,
+including an empty string for an empty pool.  ERRBACK and OWNER follow
+`bili-api-get'; credentials never leave the trusted API transport."
+  (unless (and (integerp cid) (> cid 0))
+    (error "Bilibili danmaku CID must be positive"))
+  (unless (and (integerp segment-index) (<= 1 segment-index 240))
+    (error "Bilibili danmaku segment index must be between 1 and 240"))
+  (bili-api--start
+   callback errback owner
+   (lambda (request)
+     (bili-api--dispatch-step
+      request (bili-api--endpoint-url
+               bili-api--web-root "/x/v2/dm/web/seg.so"
+               `((type . 1) (oid . ,cid) (segment_index . ,segment-index)))
+      (lambda (data) (bili-api--succeed request data)) nil t))))
 
 (provide 'bili-api)
 

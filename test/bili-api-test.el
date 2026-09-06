@@ -46,19 +46,19 @@
 
 (ert-deftest bili-api-decodes-bounded-success-and-provider-errors ()
   (with-temp-buffer
-    (insert "HTTP/1.1 200 OK\r\n\r\n{\"code\":0,\"data\":{\"ok\":true}}")
+    (insert "HTTP/1.1 200 OK\n\n")
     (setq-local url-http-response-status 200
-                url-http-end-of-headers 20)
+                url-http-end-of-headers (copy-marker (1- (point))))
+    (insert "{\"code\":0,\"data\":{\"ok\":true}}")
     (should (equal (bili-api--response-data nil) '((ok . t)))))
   (with-temp-buffer
-    (insert
-     "HTTP/1.1 200 OK\r\n\r\n{\"code\":-101,\"message\":\"账号未登录\",\"data\":{\"isLogin\":false}}")
+    (insert "HTTP/1.1 200 OK\n\n")
     (setq-local url-http-response-status 200
-                url-http-end-of-headers 20)
+                url-http-end-of-headers (copy-marker (1- (point))))
+    (insert "{\"code\":-101,\"message\":\"账号未登录\",\"data\":{\"isLogin\":false}}")
     (should-error (bili-api--response-data nil))
-    (should
-     (equal (bili-api--response-data nil '(-101))
-            '((isLogin . nil))))))
+    (should (equal (bili-api--response-data nil '(-101)) '((isLogin . nil))))))
+
 
 (ert-deftest bili-api-live-room-uses-base-info-contract ()
   (let (arguments)
@@ -160,6 +160,27 @@
       (should-error (bili-api-video-comments 0 #'ignore))
       (should-error
        (bili-api-video-comments 42 #'ignore :offset "")))))
+
+(ert-deftest bili-api-binary-body-preserves-protobuf-leading-lf ()
+  (require 'bili-danmaku)
+  ;; Field 1's tag is itself LF.  Only the HTTP separator may be removed.
+  (let ((body (unibyte-string 10 12 24 1 32 25 40 255 255 255 7 58 1 65)))
+    (with-temp-buffer
+      (set-buffer-multibyte nil)
+      (insert "HTTP/1.1 200 OK\nContent-Type: application/octet-stream\n\n")
+      (setq-local url-http-response-status 200
+                  url-http-end-of-headers (copy-marker (1- (point))))
+      (insert body)
+      (let ((bytes (bili-api--response-data nil nil t)))
+        (should (equal bytes body))
+        (should (equal (bili-danmaku-decode-segment bytes)
+                       '([0 1 25 16777215 "A"])))))
+    (with-temp-buffer
+      (set-buffer-multibyte nil)
+      (insert "HTTP/1.1 200 OK\n\n")
+      (setq-local url-http-response-status 200
+                  url-http-end-of-headers (copy-marker (1- (point))))
+      (should (equal (bili-api--response-data nil nil t) "")))))
 
 (provide 'bili-api-test)
 
