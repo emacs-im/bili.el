@@ -14,10 +14,7 @@
 (declare-function turn-off-evil-snipe-override-mode "evil-snipe" ())
 
 (require 'appkit-evil)
-(require 'bili-browse)
-(require 'bili-comment)
-(require 'bili-detail)
-(require 'bili-playback)
+(require 'bili)
 
 (defcustom bili-evil-initial-state 'normal
   "Initial Evil state for read-only bili.el views.

@@ -21,8 +21,6 @@
 (require 'bili-core)
 (require 'bili-playback)
 
-(with-eval-after-load 'evil
-  (require 'bili-evil))
 
 ;;;###autoload
 (defun bili ()
@@ -67,5 +65,8 @@
   (bili-auth-clear))
 
 (provide 'bili)
+
+(with-eval-after-load 'evil
+  (require 'bili-evil nil t))
 
 ;;; bili.el ends here
