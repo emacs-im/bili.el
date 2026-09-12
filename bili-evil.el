@@ -10,6 +10,9 @@
 
 ;;; Code:
 
+(declare-function turn-off-evil-snipe-mode "evil-snipe" ())
+(declare-function turn-off-evil-snipe-override-mode "evil-snipe" ())
+
 (require 'appkit-evil)
 (require 'bili-browse)
 (require 'bili-comment)
@@ -49,7 +52,7 @@ Safe to call repeatedly and before or after Evil loads."
        "g j" #'bili-browse-next-item
        "g k" #'bili-browse-previous-item
        "g h" #'bili-browse-home
-       "g f" #'bili-browse-recommended
+       "f" #'bili-browse-recommended
        "g s" #'bili-browse-search
        "g e" #'bili-browse-edit-search
        "g l" #'bili-browse-live
@@ -62,7 +65,7 @@ Safe to call repeatedly and before or after Evil loads."
        "g p" #'bili-detail-play
        "g s" #'bili-detail-select-page
        "g c" #'bili-detail-open-comments
-       "g o" #'bili-detail-open-in-browser
+       "g x" #'bili-detail-open-in-browser
        "g j" #'bili-detail-next-action
        "g k" #'bili-detail-previous-action)
       (:map bili-comment-mode-map
@@ -88,6 +91,12 @@ Safe to call repeatedly and before or after Evil loads."
 
 (with-eval-after-load 'evil
   (bili-evil-setup))
+
+(with-eval-after-load 'evil-snipe
+  (dolist (mode '(bili-browse-mode bili-comment-mode bili-detail-mode))
+    (let ((hook (intern (format "%s-hook" mode))))
+      (add-hook hook #'turn-off-evil-snipe-mode)
+      (add-hook hook #'turn-off-evil-snipe-override-mode))))
 
 (provide 'bili-evil)
 
