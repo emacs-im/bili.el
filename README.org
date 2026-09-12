@@ -1,0 +1,78 @@
+#+title: bili.el
+
+A read-only Bilibili client for Emacs, built on Appkit and video.el: browse
+videos and live rooms, search, read details and comments, and play directly
+in an Emacs Canvas.
+
+* Setup
+
+Requires Emacs 32.0 or newer, [[https://github.com/emacs-im/appkit.el][appkit.el]],
+[[https://github.com/0WD0/browser-session][browser-session]], and [[https://github.com/0WD0/video.el][video.el]] with its native
+GStreamer module. Install these packages and bili.el with your package
+manager. From the ~bili.el~ directory in this monorepo, build the module:
+
+#+begin_src sh
+make -C ../video.el module
+#+end_src
+
+Run ~M-x bili~ to open the comprehensive popular-video catalog
+(~/x/web-interface/popular~), not an account-personalized home feed.
+For the logged-in account's separate personalized feed, use
+~M-x bili-recommended~.
+
+Other entry points are ~bili-search~, ~bili-live~, and ~bili-open~ (a BV id,
+video URL, live-room id, or live-room URL). Catalogs load more pages near
+the visible window edge. For Evil bindings, see [[file:bili-evil.el][bili-evil.el]].
+
+* Authentication and transport
+
+~M-x bili-login~ imports only ~SESSDATA~ and ~bili_jct~ through
+browser-session; the credential file is written atomically with mode
+~0600~. ~M-x bili-logout~ deletes the imported credentials.
+
+Account cookies are sent only by ~bili-api.el~ to these exact HTTPS origins:
+
+- ~https://api.bilibili.com~
+- ~https://api.live.bilibili.com~
+
+Cover and avatar downloads accept only HTTPS on port 443 from ~hdslb.com~,
+~biliimg.com~, or their real subdomains. Public image requests never receive
+account cookies.
+
+CDN requests receive only the public bili.el user agent and a Referer:
+~https://www.bilibili.com/~ for video, or
+~https://live.bilibili.com/<canonical-room-id>~ for live streams. They do
+not receive account cookies.
+
+Signed CDN URLs are transient transport data, not canonical Appkit resource
+identities. Live streams use no disk cache.
+
+* Playback limits
+
+- Video playback supports one safe progressive MP4 segment. Each part of a
+  multi-part video has a stable BVID/CID cache identity.
+- Live playback supports HTTPS HTTP-FLV with AVC; streams are explicitly
+  non-seekable and shown as live by video.el.
+- DASH audio/video merging, HLS, replay/round playback, danmaku, and all
+  write operations are outside the current read-only scope.
+
+bili.el does not invoke yt-dlp, mpv, ffmpeg, or a local HTTP proxy at runtime.
+
+* Runtime ownership
+
+The canonical App owns immutable video, live-room, and comment entities
+and keyed metadata Effects. Generated Surfaces own catalog membership,
+pagination, selection, presentation phases, stale-request fencing, and
+playback-resolution Effects. Projections render entities by stable key;
+cover and avatar acquisition is declarative Resource demand.
+
+Comments use a Generated Surface and ~appkit-discussion~ with stable
+root/reply identities and parent/depth metadata. Main-comment pagination
+follows Bilibili's opaque cursor on scroll; nested replies appear as previews.
+
+~M-x bili-core-stop~ stops the canonical App, generated surfaces, and owned
+effects.
+
+* License
+
+MIT. See [[file:LICENSE][LICENSE]].
